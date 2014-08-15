@@ -54,14 +54,14 @@ local function checkPath(path)
     error("path is required.", 482)
 end
 
-local function createUploadForm()
+local function createUploadForm(config)
     local chunk_size = 8192
     local form, err = upload:new(chunk_size)
     if not form then
         error("failed to get upload form. ", 500, err)
     end
 
-    form:set_timeout(1000)
+    form:set_timeout(config.timeout)
     return form
 end
 
@@ -149,7 +149,7 @@ end
 local function handleUpload(config) 
 	local uploadResult = {}
     local uploadData = nil
-    local form = createUploadForm()
+    local form = createUploadForm(config)
 
     while true do
         local typ, res, err = form:read()
@@ -178,7 +178,8 @@ function _M.upload(maxSize, suffix, path)
 	local config = {
 		maxSize = parseMaxSize(maxSize or 0),
         suffix = suffix or "*",
-        path = checkPath(path)    
+        path = checkPath(path),
+        timeout = timeout or 60000 -- 1 minute    
 	}
 
     ngx.log(ngx.DEBUG, "uploader config : ", cjson.encode(config))
