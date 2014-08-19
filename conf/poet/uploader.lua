@@ -25,11 +25,8 @@ local _M = {
     _VERSION = '0.1'
 }
 
-local function error(msg, httpCode, err)
-	ngx.status = httpCode
-    ngx.say(msg, err or "")
-    ngx.log(ngx.ERR, msg)
-    ngx.exit(httpCode)
+local function throwError(msg, httpCode, err)
+    error({code = httpCode, msg = msg .. (err or "")})
 end 
 
 local function parseMaxSize(maxSize)
@@ -45,20 +42,20 @@ local function parseMaxSize(maxSize)
         return tonumber(maxSize)
     end
 
-    error("maxSize is illegal, it should be number or with unit 'M' or 'k'.", 480)
+    throwError("maxSize is illegal, it should be number or with unit 'M' or 'k'.", 480)
 end
 
 local function checkPath(path)
     if path then return path end
 
-    error("path is required.", 482)
+    throwError("path is required.", 482)
 end
 
 local function createUploadForm(config)
     local chunk_size = 8192
     local form, err = upload:new(chunk_size)
     if not form then
-        error("failed to get upload form. ", 500, err)
+        throwError("failed to get upload form. ", 500, err)
     end
 
     form:set_timeout(config.timeout)
@@ -80,13 +77,13 @@ local function checkSuffix(config, fileName)
     local pattern = ".+\\.(" .. config.suffix .. ")$"
     if ngx.re.match(fileName, pattern) then return end
 
-    error("upload file type is not allowed.", 481, err)
+    throwError("upload file type is not allowed.", 481, err)
 end
 
 local function createPathIfNotExist(config)
     if os.execute( "cd " .. config.path ) ~= 0 then
         if os.execute( "mkdir -p " .. config.path) ~= 0 then
-        	error("failed to make directory " .. config.path .. ".", 484);
+        	throwError("failed to make directory " .. config.path .. ".", 484);
         end
     end
 end
@@ -94,7 +91,7 @@ end
 local function openFile(config, randomFileName)
     local uploadFile, err = io.open(config.path .. "/" .. randomFileName, "w+")                  
     if not uploadFile then
-        error("failed to open file " .. randomFileName .. ".", err)
+        throwError("failed to open file " .. randomFileName .. ".", err)
     end
 
     return uploadFile
@@ -126,7 +123,7 @@ local function checkMaxSize(uploadData, config)
     uploadData.uploadFile:close()
     os.remove(config.path .. uploadData.randomFileName)
     ngx.log(ngx.ERR, "upload file size over the limit")
-    error("file is too large than allowed max size " .. config.maxSize .. ".", 483)
+    throwError("file is too large than allowed max size " .. config.maxSize .. ".", 483)
 end
 
 local function handleBody(config, uploadData, res)
@@ -154,7 +151,7 @@ local function handleUpload(config)
     while true do
         local typ, res, err = form:read()
         if not typ then
-            error("failed to read type. ", 500, err)
+            throwError("failed to read type. ", 500, err)
         end
            
         if typ == "header" then     
@@ -184,9 +181,9 @@ function _M.upload(maxSize, suffix, path)
 
     ngx.log(ngx.DEBUG, "uploader config : ", cjson.encode(config))
 
-    local uploadResult = handleUpload(config, uploadResult)
-    ngx.header["Content-type"] = "application/json"
-    ngx.say(cjson.encode(uploadResult))       
+    return handleUpload(config, uploadResult)
+    -- ngx.header["Content-type"] = "application/json"
+    -- ngx.say(cjson.encode(uploadResult))       
 end
 
 return _M
