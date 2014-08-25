@@ -18,8 +18,6 @@ maxSize is illegal, it should be number or with unit 'M' or 'k'.
 ]]
 
 local upload = require "resty.upload"
-local random = require "poet.random"
-local cjson = require "cjson"
 
 local _M = {
     _VERSION = '0.1'
@@ -27,7 +25,7 @@ local _M = {
 
 local function throwError(msg, httpCode, err)
     error({code = httpCode, msg = msg .. (err or "")})
-end 
+end
 
 local function parseMaxSize(maxSize)
     local match = ngx.re.match(maxSize, "^(\\d+)([mMkK])$")
@@ -62,14 +60,14 @@ local function createUploadForm(config)
     return form
 end
 
-local function getFilename(res)  
+local function getFilename(res)
     local filename = ngx.re.match(res,'(.+)filename="(.+)"(.*)')
-    if filename then   
+    if filename then
         return filename[2]
     else
-    	return ""
+        return ""
     end
-end  
+end
 
 local function checkSuffix(config, fileName)
     if "*" == config.suffix then return  end
@@ -83,15 +81,15 @@ end
 local function createPathIfNotExist(config)
     if os.execute( "cd " .. config.path ) ~= 0 then
         if os.execute( "mkdir -p " .. config.path) ~= 0 then
-        	throwError("failed to make directory " .. config.path .. ".", 484);
+            throwError("failed to make directory " .. config.path .. ".", 484);
         end
     end
 end
 
-local function openFile(config, randomFileName)
-    local uploadFile, err = io.open(config.path .. "/" .. randomFileName, "w+")                  
+local function openFile(config, fileName)
+    local uploadFile, err = io.open(config.path .. "/" .. fileName, "w+")
     if not uploadFile then
-        throwError("failed to open file " .. randomFileName .. ".", err)
+        throwError("failed to open file " .. fileName .. ".", err)
     end
 
     return uploadFile
@@ -103,15 +101,13 @@ local function handleHeader(config, res)
 
     checkSuffix(config, fileName)
 
-    local randomFileName = random.token(10) .. '.' .. fileName
-    
     createPathIfNotExist(config)
 
-    local uploadFile = openFile(config, randomFileName)
+    local uploadFile = openFile(config, fileName)
 
     return {
-    	randomFileName = randomFileName,
-    	uploadFile = uploadFile
+        fileName = fileName,
+        uploadFile = uploadFile
     }
 
 end
@@ -121,7 +117,7 @@ local function checkMaxSize(uploadData, config)
     if uploadData.uploadFile:seek("end") <= config.maxSize then return end
 
     uploadData.uploadFile:close()
-    os.remove(config.path .. uploadData.randomFileName)
+    os.remove(config.path .. uploadData.fileName)
     ngx.log(ngx.ERR, "upload file size over the limit")
     throwError("file is too large than allowed max size " .. config.maxSize .. ".", 483)
 end
@@ -136,15 +132,15 @@ end
 
 local function handleEnd(config, uploadData, uploadResult)
     if not uploadData then return end
-    
+
     local size = uploadData.uploadFile:seek("end")
     uploadData.uploadFile:close()
 
-    table.insert(uploadResult, {name = uploadData.randomFileName, size = size})    
+    table.insert(uploadResult, {name = uploadData.fileName, size = size})
 end
 
-local function handleUpload(config) 
-	local uploadResult = {}
+local function handleUpload(config)
+    local uploadResult = {}
     local uploadData = nil
     local form = createUploadForm(config)
 
@@ -153,37 +149,37 @@ local function handleUpload(config)
         if not typ then
             throwError("failed to read type. ", 500, err)
         end
-           
-        if typ == "header" then     
+
+        if typ == "header" then
             if res[1] ~= "Content-Type" then
-                uploadData = handleHeader(config, res[2]) 
+                uploadData = handleHeader(config, res[2])
             end
         elseif typ == "body" then
-            handleBody(config, uploadData, res)          
+            handleBody(config, uploadData, res)
         elseif typ == "part_end" then
             handleEnd(config, uploadData, uploadResult)
             uploadData = nil
         elseif typ == "eof" then
             break
-        end 
+        end
     end
 
     return uploadResult
 end
 
 function _M.upload(maxSize, suffix, path)
-	local config = {
-		maxSize = parseMaxSize(maxSize or 0),
+    local config = {
+        maxSize = parseMaxSize(maxSize or 0),
         suffix = suffix or "*",
         path = checkPath(path),
-        timeout = timeout or 60000 -- 1 minute    
-	}
-
-    ngx.log(ngx.DEBUG, "uploader config : ", cjson.encode(config))
+        timeout = timeout or 60000 -- 1 minute
+    }
 
     return handleUpload(config, uploadResult)
-    -- ngx.header["Content-type"] = "application/json"
-    -- ngx.say(cjson.encode(uploadResult))       
+        -- ngx.header["Content-type"] = "application/json"
+        -- ngx.say(cjson.encode(uploadResult))
 end
 
 return _M
+
+
