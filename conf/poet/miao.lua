@@ -89,6 +89,12 @@ local function miaoPrice (redis, prefix, mobile, priceStr, levelNum)
     updatePrice(redis, prefix, mobile, priceStr)
 end
 
+-- CREATE TABLE miao (
+--   mobile bigint(20) unsigned NOT NULL,
+--   price int(10) unsigned NOT NULL,
+--   ts timestamp NOT NULL,
+--   PRIMARY KEY (mobile)
+-- )
 local function saveRecordToMysql (mysql, mobile, price)
     local sql = "insert into miao (mobile, price, ts) "
              .. "values (".. mobile .. ", ".. price .. ", now())"
