@@ -51,7 +51,7 @@ local function checkExistence (config)
     local count = config.redis:incr(config.prefix .. config.mobile)
 
     if tonumber(count) > 1 then
-        error(config, config.mobile .. " is already in second killing, please try later" .. price, 400)
+        error(config, config.mobile .. " is already in second killing, please try later", 400)
     end
 
     local sql = "select price from miao where mobile = " .. config.mobile
