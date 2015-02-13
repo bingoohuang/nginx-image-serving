@@ -73,7 +73,8 @@ local function checkSuffix(config, fileName)
     if "*" == config.suffix then return  end
 
     local pattern = ".+\\.(" .. config.suffix .. ")$"
-    if ngx.re.match(fileName, pattern) then return end
+    local lowerFileName = fileName:lower()
+    if ngx.re.match(lowerFileName, pattern) then return end
 
     throwError("upload file type is not allowed.", 481, err)
 end
@@ -170,7 +171,7 @@ end
 function _M.upload(maxSize, suffix, path)
     local config = {
         maxSize = parseMaxSize(maxSize or 0),
-        suffix = suffix or "*",
+        suffix = (suffix or "*"):lower(),
         path = checkPath(path),
         timeout = timeout or 60000 -- 1 minute
     }

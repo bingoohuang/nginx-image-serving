@@ -93,6 +93,12 @@ local function updatePrice(config)
     end
 end
 
+-- CREATE TABLE MIAO (
+--  MOBILE BIGINT(20) UNSIGNED NOT NULL,
+--  PRICE INT(10) UNSIGNED NOT NULL,
+--  TS TIMESTAMP NOT NULL,
+--  PRIMARY KEY (MOBILE)
+--);
 local function saveRecordToMysql(config)
     local sql = "insert into miao (mobile, price, ts) "
              .. "values (".. config.mobile .. ", ".. config.price .. ", now())"
