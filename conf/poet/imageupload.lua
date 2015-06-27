@@ -18,6 +18,7 @@ maxSize is illegal, it should be number or with unit 'M' or 'k'.
 ]]
 
 local upload = require "resty.upload"
+local cjson = require "cjson"
 
 local _M = {
     _VERSION = '0.1'
@@ -43,8 +44,16 @@ local function parseMaxSize(maxSize)
     throwError("maxSize is illegal, it should be number or with unit 'M' or 'k'.", 480)
 end
 
+local function addTrailingSlash(path)
+    if string.sub(path, -1) ~= "/" then
+        return path .. "/"
+    else
+        return path
+    end
+end
+
 local function checkPath(path)
-    if path then return path end
+    if path then return addTrailingSlash(path) end
 
     throwError("path is required.", 482)
 end
@@ -70,25 +79,26 @@ local function getFilename(res)
 end
 
 local function checkSuffix(config, fileName)
-    if "*" == config.suffix then return  end
+    if "*" == config.suffix then return end
 
     local pattern = ".+\\.(" .. config.suffix .. ")$"
     local lowerFileName = fileName:lower()
     if ngx.re.match(lowerFileName, pattern) then return end
 
-    throwError("upload file type is not allowed.", 481, err)
+    throwError("upload file type is not allowed, file name "
+        .. lowerFileName .. " does not match " .. config.suffix, 481, err)
 end
 
 local function createPathIfNotExist(config)
-    if os.execute( "cd " .. config.path ) ~= 0 then
-        if os.execute( "mkdir -p " .. config.path) ~= 0 then
+    if os.execute("cd " .. config.path ) ~= 0 then
+        if os.execute("mkdir -p " .. config.path) ~= 0 then
             throwError("failed to make directory " .. config.path .. ".", 484);
         end
     end
 end
 
 local function openFile(config, fileName)
-    local uploadFile, err = io.open(config.path .. "/" .. fileName, "w+")
+    local uploadFile, err = io.open(config.path .. fileName, "w+")
     if not uploadFile then
         throwError("failed to open file " .. fileName .. ".", err)
     end
@@ -98,6 +108,7 @@ end
 
 local function handleHeader(config, res)
     local fileName = getFilename(res)
+    ngx.log(ngx.INFO, "upload file name " .. fileName)
     if "" == fileName then return nil end
 
     checkSuffix(config, fileName)
@@ -110,7 +121,6 @@ local function handleHeader(config, res)
         fileName = fileName,
         uploadFile = uploadFile
     }
-
 end
 
 local function checkMaxSize(uploadData, config)
@@ -171,16 +181,40 @@ end
 function _M.upload(maxSize, suffix, path)
     local config = {
         maxSize = parseMaxSize(maxSize or 0),
-        suffix = (suffix or "*"):lower(),
-        path = checkPath(path),
+        suffix = ngx.unescape_uri((suffix or "*"):lower()),
+        path = checkPath(path and ngx.unescape_uri(path)),
         timeout = timeout or 60000 -- 1 minute
     }
 
     return handleUpload(config, uploadResult)
-        -- ngx.header["Content-type"] = "application/json"
-        -- ngx.say(cjson.encode(uploadResult))
+end
+
+function _M.uploadImage()
+    local maxSize = ngx.var.arg_maxSize
+    local suffix = ngx.var.arg_suffix
+    local path = ngx.var.arg_path
+
+    local success, result = pcall(_M.upload, maxSize, suffix, path)
+    -- adapter KindEditor upload JSON response
+    local uploadResult;
+    if success then
+      local files = {}
+      for key, value in ipairs(result) do
+        files[key] = value.name
+      end
+      uploadResult = {
+        error = 0,
+        files = files
+      }
+    else
+      uploadResult = {
+        error = 1,
+        message = result.msg
+      }
+    end
+
+    ngx.header["Content-type"] = "application/json"
+    ngx.say(cjson.encode(uploadResult))
 end
 
 return _M
-
-
