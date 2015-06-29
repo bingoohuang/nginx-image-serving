@@ -86,7 +86,8 @@ function _M.convert(option)
         targetPath = unescapeUri(option and option.targetPath),
         fileName = unescapeUri(option and option.fileName),
         sizes = unescapeUri(option and option.sizes),
-        sizePosition = option and option.sizePosition or "middle"
+        sizePosition = option and option.sizePosition or "middle",
+        crop = option and option.crop or "true"
     }
 
     ngx.log(ngx.INFO, "srcPath " .. " " .. (opt.srcPath or "nil"))
@@ -118,10 +119,14 @@ function _M.convert(option)
         local targetFile = opt.targetPath .. sizedFileName
 
         if tonumber(width) <= maxWidth and tonumber(height) <= maxHeight then
-            os.execute(opt.convertCmd .. " " .. imageFile
-                    .. " -resize " .. size
-                    .. " -unsharp 0x1 "
-                    .. targetFile)
+            --  http://www.imagemagick.org/Usage/resize/#noaspect
+            local cmd = opt.convertCmd .. " " .. imageFile .. " -unsharp 0x1 -resize " .. size
+            if opt.crop == "true" then
+                cmd = cmd .. "^ -gravity center -extent " .. size
+            end
+            local result = os.execute(cmd .. " " .. targetFile)
+            if result ~= 0 then return "failed to resize file,"
+                + " this may be caused by imagemagick install problem" end
         end
     end
 
@@ -135,7 +140,8 @@ function _M.convertImage ()
         fileName = ngx.var.arg_file,
         sizes = ngx.var.arg_sizes,
         -- left: 100X100.xxx.jpg, middle:xxx.100X100.jpg, right: xxx.jpg.100X100
-        sizePosition = "right"
+        sizePosition = "right",
+        crop = "true"
     }
     ngx.header["Content-type"] = "text/plain"
     ngx.say(result)
