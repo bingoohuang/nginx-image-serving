@@ -65,6 +65,19 @@ local function unescapeUri(param)
     return param and ngx.unescape_uri(param) or param
 end
 
+local function createSizedFileName(opt, size)
+    if opt.sizePosition == "left" then
+        return size .. "." .. opt.fileName, nil
+    elseif opt.sizePosition == "middle" then
+        return string.gsub(opt.fileName, "%.%w+$", "." .. size .. "%1"), nil
+    elseif opt.sizePosition == "right" then
+        return opt.fileName .. "." .. size, nil
+    else
+        return nil, "sizePosition " .. opt.sizePosition
+            .. " is illegal, should be left, middle or right"
+    end
+end
+
 function _M.convert(option)
     local opt = {
         convertCmd = option and option.convertCmd or "convert",
@@ -72,7 +85,8 @@ function _M.convert(option)
         srcPath = unescapeUri(option and option.srcPath),
         targetPath = unescapeUri(option and option.targetPath),
         fileName = unescapeUri(option and option.fileName),
-        sizes = unescapeUri(option and option.sizes)
+        sizes = unescapeUri(option and option.sizes),
+        sizePosition = option and option.sizePosition or "middle"
     }
 
     ngx.log(ngx.INFO, "srcPath " .. " " .. (opt.srcPath or "nil"))
@@ -98,7 +112,9 @@ function _M.convert(option)
     for width, x, height in string.gmatch(opt.sizes, "(%d+)([xX])(%d+)") do
         if not width or not height then return opt.sizes .. " is in bad format" end
         local size = width .. x .. height
-        local sizedFileName = string.gsub(opt.fileName, "%.%w+$", "." .. size .. "%1")
+        local sizedFileName, err = createSizedFileName(opt, size)
+        if err then return err end
+
         local targetFile = opt.targetPath .. sizedFileName
 
         if tonumber(width) <= maxWidth and tonumber(height) <= maxHeight then
@@ -117,7 +133,9 @@ function _M.convertImage ()
         srcPath = ngx.var.arg_src,
         targetPath = ngx.var.arg_target,
         fileName = ngx.var.arg_file,
-        sizes = ngx.var.arg_sizes
+        sizes = ngx.var.arg_sizes,
+        -- left: 100X100.xxx.jpg, middle:xxx.100X100.jpg, right: xxx.jpg.100X100
+        sizePosition = "right"
     }
     ngx.header["Content-type"] = "text/plain"
     ngx.say(result)
