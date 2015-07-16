@@ -60,7 +60,7 @@ _M.tcode = function(opt)
 
         local hi_aes = require("hi_aes"):new(opt)
         local tidAndTcode = hi_aes:decrypt(encrptedTid)
-        local tid, tcode = string.match(tidAndTcode, "(%w+)^(%w+)")
+        local tid, tcode = string.match(tidAndTcode, "(.+)%^(.+)")
 
         setHeaders(tid, tcode)
 
