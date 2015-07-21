@@ -82,8 +82,15 @@ local function checkSuffix(config, fileName)
     if "*" == config.suffix then return end
 
     local pattern = ".+\\.(" .. config.suffix .. ")$"
-    local lowerFileName = fileName:lower()
-    if ngx.re.match(lowerFileName, pattern) then return end
+    -- http://wiki.nginx.org/HttpLuaModule#ngx.re.match
+    -- i  case insensitive mode (similar to Perl's /i modifier)
+    -- j  enable PCRE JIT compilation, this requires PCRE 8.21+ which
+    --    must be built with the --enable-jit option. for optimum performance,
+    --    this option should always be used together with the 'o' option.
+    --    first introduced in ngx_lua v0.3.1rc30.
+    --  o compile-once mode (similar to Perl's /o modifier),
+    --    to enable the worker-process-level compiled-regex cache
+    if ngx.re.match(fileName, pattern, "ijo") then return end
 
     throwError("upload file type is not allowed, file name "
         .. lowerFileName .. " does not match " .. config.suffix, 481, err)
@@ -181,7 +188,7 @@ end
 function _M.upload(maxSize, suffix, path)
     local config = {
         maxSize = parseMaxSize(maxSize or 0),
-        suffix = ngx.unescape_uri((suffix or "*"):lower()),
+        suffix = ngx.unescape_uri(suffix or "*"),
         path = checkPath(path and ngx.unescape_uri(path)),
         timeout = timeout or 60000 -- 1 minute
     }
@@ -202,15 +209,9 @@ function _M.uploadImage()
       for key, value in ipairs(result) do
         files[key] = value.name
       end
-      uploadResult = {
-        error = 0,
-        files = files
-      }
+      uploadResult = { error = 0, files = files }
     else
-      uploadResult = {
-        error = 1,
-        message = result.msg
-      }
+      uploadResult = { error = 1, message = result.msg }
     end
 
     ngx.header["Content-type"] = "application/json"
