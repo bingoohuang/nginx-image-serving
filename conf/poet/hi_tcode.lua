@@ -25,33 +25,28 @@ end
 _M.tcode = function(opt)
     -- http://wiki.nginx.org/HttpCoreModule#.24host
     -- for lua Patterns, refer to http://www.lua.org/pil/20.2.html
-    local tcode = opt.useSubDomain && string.match(ngx.var.host, "^(%w+)%.[%w%-]+%.%w+$")
-    local domain = tcode and ("www" ~= tcode)
-    tcode = tcode or string.match(ngx.var.uri, "^/(%w+)$")
-    local prevWord = opt and opt.prevWord or "tcode"
-    tcode = tcode or string.match(ngx.var.uri, "/" .. prevWord .. "/(%w+)")
+    -- local tcode = opt.useSubDomain && string.match(ngx.var.host, "^(%w+)%.[%w%-]+%.%w+$")
+    -- local domain = tcode and ("www" ~= tcode)
+    -- tcode = tcode or string.match(ngx.var.uri, "^/(%w+)$")
+    local prevWord = opt and opt.prevWord or 'tcode'
+    local tcode = string.match(ngx.var.uri, "/" .. prevWord .. "/(%w+)")
 
     if tcode then
         local hi_redis = require("hi_redis"):connect(opt)
         local tid, err = hi_redis:get("tcode:" .. tcode)
         hi_redis:close()
 
-        if not err then
-            ngx.log(ngx.STDERR, err)
-            ngx.exit(500)
-        end
-
-        if not tid then ngx.exit(404) return end
+        if not tid then ngx.log(ngx.STDERR, err) ngx.exit(404) end
 
         setHeaders(tid, tcode)
 
-        if not domain then
+        -- if not domain then
             local hi_aes = require("hi_aes"):new(opt)
             require("hi_cookie"):set {
                 key = "easyhi_tcode", path = "/",
                 value = hi_aes:encrypt(tid .. "^" .. tcode)
             }
-        end
+        -- end
 
         return tid
     else

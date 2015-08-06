@@ -33,7 +33,7 @@ end
 
 function _M.get (self, key)
     local value, err = self.redis:get(key)
-    if value == ngx.null then return nil end
+    if value == ngx.null then return nil, nil end
     return value, err
 end
 

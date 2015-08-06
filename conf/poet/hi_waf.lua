@@ -94,7 +94,8 @@ end
 local function block(self, message)
     ngx.log(ngx.ERR, "[HiWAF][", tostring(message),
         "][BLOCKED]", "[MATCH: ", self.lastMatchInfo, "]")
-    ngx.exit(401)
+    ngx.status = ngx.HTTP_FORBIDDEN
+    ngx.exit(ngx.status)
 end
 
 function _M.protect(conf)
