@@ -110,6 +110,20 @@ function _M.convert(option)
     os.execute(opt.convertCmd .. " " .. srcFile .. " -auto-orient -strip " .. imageFile)
     local maxWidth, maxHeight = parseImageOriginalSize(opt, imageFile)
 
+    --[[
+    经测试，发现-unsharp 0x1选项会使得切图很慢。大概3M左右的图片切5种尺寸，需要10秒。
+    去掉该选项后，可以降到到2秒左右。
+    #!/bin/bash
+
+    date "+TIME: %H:%M:%S"
+    convert 123.jpg -unsharp 0x1 -resize 100X100^ -gravity center -extent  100X100 100X100.jpg
+    convert 123.jpg -unsharp 0x1 -resize 90X60^   -gravity center -extent  90X60   90X60.jpg
+    convert 123.jpg -unsharp 0x1 -resize 80X80^   -gravity center -extent  80X80   80X80.jpg
+    convert 123.jpg -unsharp 0x1 -resize 46X46^   -gravity center -extent  46X46   46X46.jpg
+    convert 123.jpg -unsharp 0x1 -resize 325X240^ -gravity center -extent  325X240 325X240.jpg
+    date "+TIME: %H:%M:%S"
+    ]]--
+
     for width, x, height in string.gmatch(opt.sizes, "(%d+)([xX])(%d+)") do
         if not width or not height then return opt.sizes .. " is in bad format" end
         local size = width .. x .. height
