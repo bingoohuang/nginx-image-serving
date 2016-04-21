@@ -26,6 +26,20 @@ local function switchPeersState(upstreamName, grayPeers, foundDownValue)
 end
 
 --[[
+    设定需要灰度的商户路由指向升级中
+    opt.grayDic: 用来存储当前灰度的TID列表的Nginx共享内存的名称
+    opt.tids, 以英文逗号分隔的需要灰度的TID列表
+--]]
+function _M.grayDoing(opt)
+    local doingTids = opt.tids .. ","
+
+    local grayDictName = opt.grayDict or "gray"
+    local grayDict = ngx.shared[grayDictName]
+
+    grayDict:set("tids_doing", doingTids)
+end
+
+--[[
     设定需要灰度的商户及灰度路由指向
     opt.grayDic: 用来存储当前灰度的TID列表的Nginx共享内存的名称
     opt.tids, 以英文逗号分隔的需要灰度的TID列表
@@ -33,12 +47,13 @@ end
 --]]
 function _M.grayAdmin(opt)
     local grayDictName = opt.grayDict or "gray"
+    local grayDict = ngx.shared[grayDictName]
 
     local grayTids = opt.tids .. ","
     local grayPeers = opt.peers .. ","
 
-    local grayDict = ngx.shared[grayDictName]
-    grayDict:set("tids", grayTids)
+    grayDict:set("tids_gray", grayTids)
+    grayDict:delete("tids_doing")
 
     -- 之前版本中down灰度服务器,up非灰度服务器
     local versionPrev = opt.versionPrev or "version.prev"
@@ -56,13 +71,27 @@ end
 function _M.queryGrayRoute(opt)
     local versionPrev = opt.versionPrev or "version.prev"
     local versionGray = opt.versionGray or "version.gray"
+    local versionDoing = opt.versionDoing or "version.doing"
+
     local grayDictName = opt.grayDict or "gray"
     local grayDict = ngx.shared[grayDictName]
-    local grayTids = grayDict:get("tids") or ""
+    local grayTids = grayDict:get("tids_gray")
+    local doingTids = grayTids or grayDict:get("tids_doing")
 
     local tid = opt.tid
-    local found = string.find(grayTids, tid .. ",") ~= nil
-    return found and versionGray or versionPrev
+
+    -- 已经设置灰度，指向灰度
+    if grayTids and string.find(grayTids, tid .. ",") then
+        return versionGray
+    end
+
+    -- 正在准备灰度，指向升级中
+    if doingTids and string.find(doingTids, tid .. ",") then
+        return versionDoing
+    end
+
+    -- 指向正常版本
+    return versionPrev
 end
 
 function _M.showUpstreams()
