@@ -20,7 +20,11 @@ function _M.connect(self, opt)
     local ok, err = redis:connect(conf.host, conf.port)
     if not ok then return nil, err end
 
-    if not conf.auth then redis:auth(conf.auth) end
+    if conf.auth then
+        -- 检查是否重用的redis连接，如果是重用的，则不需要再次auth
+        local count, err = redis:get_reused_times()
+        if 0 == count then redis:auth(conf.auth) end
+    end
 
     return setmetatable({ redis = redis, conf = conf }, mt)
 end
