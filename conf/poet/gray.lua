@@ -94,6 +94,25 @@ function _M.queryGrayRoute(opt)
     return versionPrev
 end
 
+--[[
+    完成灰度发布，所有商户均恢复正常访问
+--]]
+function _M.grayComplete(opt)
+    local grayDictName = opt.grayDict or "gray"
+    local grayDict = ngx.shared[grayDictName]
+
+    -- 之前版本中up全部服务器
+    local versionPrev = opt.versionPrev or "version.prev"
+    switchPeersState(versionPrev, "", true)
+    -- 灰度版本中down全部服务器
+    local versionGray = opt.versionGray or "version.gray"
+    switchPeersState(versionGray, "", false)
+
+    -- 清楚灰度TID列表共享字典
+    grayDict:delete("tids_gray")
+    grayDict:delete("tids_doing")
+end
+
 function _M.showUpstreams()
     local us = upstream.get_upstreams()
     for _, u in ipairs(us) do
