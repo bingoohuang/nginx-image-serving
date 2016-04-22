@@ -108,7 +108,7 @@ function _M.grayComplete(opt)
     local versionGray = opt.versionGray or "version.gray"
     switchPeersState(versionGray, "", false)
 
-    -- 清楚灰度TID列表共享字典
+    -- 清除灰度TID列表共享字典
     grayDict:delete("tids_gray")
     grayDict:delete("tids_doing")
 end
