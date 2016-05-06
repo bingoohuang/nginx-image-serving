@@ -18,7 +18,7 @@ local function switchPeersState(upstreamName, grayPeers, foundDownValue)
     end
 
     for _, peer in ipairs(peers) do
-        local found = string.find(grayPeers, peer.name .. ",") ~= nil
+        local found = string.find(grayPeers, peer.name .. ",", 1, true) ~= nil
         upstream.set_peer_down(upstreamName, false, peer.id, foundDownValue == found)
         ngx.say("set ", upstreamName, "'s ", peer.name, " to ",
             (foundDownValue == found) and "down" or "up")
@@ -81,12 +81,12 @@ function _M.queryGrayRoute(opt)
     local tid = opt.tid
 
     -- 已经设置灰度，指向灰度
-    if grayTids and string.find(grayTids, tid .. ",") then
+    if grayTids and string.find(grayTids, tid .. ",", 1, true) then
         return versionGray
     end
 
     -- 正在准备灰度，指向升级中
-    if doingTids and string.find(doingTids, tid .. ",") then
+    if doingTids and string.find(doingTids, tid .. ",", 1, true) then
         return versionDoing
     end
 
