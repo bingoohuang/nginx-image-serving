@@ -154,14 +154,7 @@ function _M.grayDoing(opt)
     grayDict:set("tids_doing", join(mergedTids))
 end
 
-
---[[
-    设定需要灰度的商户及灰度路由指向
-    opt.grayDic: 用来存储当前灰度的TID列表的Nginx共享内存的名称
-    opt.tids:    以英文逗号分隔的需要灰度的增量TID列表
-    opt.peers:   以英文逗号分隔的需要灰度的增量服务器
---]]
-function _M.grayAdmin(opt)
+local function grayAdminDict(opt)
     local grayDict = checkOptGrayDictName(opt);
 
     local tidsGrayed = split(grayDict:get("tids_gray"))
@@ -175,9 +168,25 @@ function _M.grayAdmin(opt)
     local tidsDoing = split(grayDict:get("tids_doing"))
     local newTidsDoing = diff(tidsDoing, tidsDiff)  -- 从准备灰度升级的商户列表中移除已经灰度的商户
     grayDict:set("tids_doing", join(newTidsDoing))  -- 设置正在准备灰度升级的商户列表
+end
+
+local function grayAdminPeers(opt)
+    local peersArray = split(opt.peers)
+    if #peersArray == 0 then return end
 
     switchPeersState(opt.versionPrev, opt.peers, "down") -- 老版本中down灰度服务器
     switchPeersState(opt.versionGray, opt.peers, "up")   -- 灰度版本中up灰度服务器
+end
+
+--[[
+    设定需要灰度的商户及灰度路由指向
+    opt.grayDic: 用来存储当前灰度的TID列表的Nginx共享内存的名称
+    opt.tids:    以英文逗号分隔的需要灰度的增量TID列表
+    opt.peers:   以英文逗号分隔的需要灰度的增量服务器
+--]]
+function _M.grayAdmin(opt)
+    grayAdminDict(opt)
+    grayAdminPeers(opt)
 end
 
 --[[
