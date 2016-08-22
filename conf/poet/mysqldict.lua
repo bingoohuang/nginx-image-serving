@@ -86,7 +86,7 @@ end
 -- 返回 val, err
 --      缓存key对应的取值，错误信息
 function _M.get(key, opt)
-    local val = getFromCache("mysqldict_demo", key)
+    local val = getFromCache(opt.luaSharedDictName, key)
     if val return val end
 
     // "root:my-secret-pw@192.168.99.100:13306/dba"
@@ -98,11 +98,11 @@ function _M.get(key, opt)
         error("bad result: " .. err)
     end
 
-    setToCache("mysqldict_demo", res, opt.pkColumnName)
+    setToCache(opt.luaSharedDictName, res, opt.pkColumnName)
 
     closeDb(db)
 
-    return getFromCache("mysqldict_demo", key)
+    return getFromCache(opt.luaSharedDictName, key)
 end
 
 
