@@ -1,0 +1,140 @@
+package main
+
+import (
+	"database/sql"
+	"github.com/BurntSushi/toml"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/jasonlvhit/gocron"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"os"
+	"time"
+)
+
+/*
+drop table if exists cache_flush_trigger;
+create table cache_flush_trigger (
+    job_name varchar(30) not null comment '刷新任务名称',
+    job_desc varchar(100) not null comment '刷新任务描述',
+    flush_url varchar(100) not null comment '刷新调用的URL',
+    token bigint not null comment '令牌值，需要刷新时，重置令牌值为0',
+    primary key (job_name)
+)engine=innodb default charset=utf8mb4 comment='缓存刷新配置';
+insert into cache_flush_trigger values('MobileNumber->MerchantInfo',
+    '手机号码查商户信息缓存刷新', 'http://127.0.0.1:9001/flushall', 0);
+update cache_flush_trigger set token = 0 where job_name = 'MobileNumber->MerchantInfo';
+
+编译: go build gosrc/cacheflushtrigger.go
+运行命令: ./cacheflushtrigger gosrc/cacheflushtrigger.toml
+*/
+func main() {
+	config := readConfig()
+
+	gocron.Every(60).Seconds().Do(mainTask, config)
+	<-gocron.Start()
+}
+
+func mainTask(config CacheFlushTriggerConfig) {
+	db := getDb(config.Db)
+	defer db.Close()
+
+	jobs := queryJobs(db)
+	for _, job := range jobs {
+		if job.token != 0 {
+			continue
+		}
+
+		_, err := httpGet(job)
+		if err == nil {
+			updateJobToken(db, job)
+		}
+	}
+}
+
+type CacheFlushTriggerConfig struct {
+	Db string
+}
+
+func readConfig() CacheFlushTriggerConfig {
+	fpath := "cacheflushtrigger.toml"
+	if len(os.Args) > 1 {
+		fpath = os.Args[1]
+	}
+
+	config := CacheFlushTriggerConfig{}
+	if _, err := toml.DecodeFile(fpath, &config); err != nil {
+		checkJobErr(err)
+	}
+
+	return config
+}
+
+func httpGet(job *Job) (string, error) {
+	log.Print(job.jobName, " ", job.flushUrl, " ")
+	resp, err := http.Get(job.flushUrl)
+	if err != nil {
+		log.Print(err)
+		return "", err
+	}
+
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	bodyStr := string(body)
+	log.Print(bodyStr)
+	return bodyStr, err
+}
+
+func updateJobToken(db *sql.DB, job *Job) {
+	stmt, err := db.Prepare("update cache_flush_trigger set token = ? where job_name = ?")
+	checkJobErr(err)
+	defer stmt.Close()
+
+	_, err = stmt.Exec(time.Now().Unix(), job.jobName)
+	checkJobErr(err)
+}
+
+type Job struct {
+	jobName  string
+	jobDesc  string
+	flushUrl string
+	token    int64
+}
+
+func queryJobs(db *sql.DB) (jobs []*Job) {
+	rows, err := db.Query("select job_name, job_desc, " +
+		"flush_url, token from cache_flush_trigger " +
+		"where token = 0")
+	checkJobErr(err)
+	defer rows.Close()
+
+	for rows.Next() {
+		row := new(Job)
+
+		err := rows.Scan(&row.jobName, &row.jobDesc, &row.flushUrl, &row.token)
+		checkJobErr(err)
+
+		jobs = append(jobs, row)
+	}
+	err = rows.Err()
+	checkJobErr(err)
+
+	if len(jobs) == 0 {
+		log.Print("no available jobs for cache flush")
+	}
+
+	return
+}
+
+func getDb(dataSourceName string) *sql.DB {
+	db, err := sql.Open("mysql", dataSourceName)
+	checkJobErr(err)
+
+	return db
+}
+
+func checkJobErr(err error) {
+	if err != nil {
+		log.Fatal(err)
+	}
+}
