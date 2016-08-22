@@ -87,9 +87,9 @@ end
 --      缓存key对应的取值，错误信息
 function _M.get(key, opt)
     local val = getFromCache(opt.luaSharedDictName, key)
-    if val return val end
+    if val then return val end
 
-    // "root:my-secret-pw@192.168.99.100:13306/dba"
+    -- "root:my-secret-pw@192.168.99.100:13306/dba"
 
     local db = connectMySQL(opt.dataSourceName)
 
