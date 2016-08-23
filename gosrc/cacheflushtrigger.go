@@ -20,7 +20,7 @@ create table cache_flush_trigger (
     job_name varchar(30) not null comment '刷新任务名称',
     job_desc varchar(100) not null comment '刷新任务描述',
     flush_url varchar(100) not null comment '刷新调用的URL',
-    token bigint not null comment '令牌值，需要刷新时，重置令牌值为新值',
+    token bigint not null comment '令牌值，需要刷新时，更新令牌值为新值',
     primary key (job_name)
 )engine=innodb default charset=utf8mb4 comment='缓存刷新配置';
 insert into cache_flush_trigger values('MobileNumber->MerchantInfo',
@@ -29,6 +29,14 @@ update cache_flush_trigger set token = token + 1 where job_name = 'MobileNumber-
 
 编译: go build gosrc/cacheflushtrigger.go
 运行命令: nohup ./cacheflushtrigger gosrc/cacheflushtrigger.toml > cacheflushtrigger.log &
+tail -f cacheflushtrigger.log
+2016/08/23 09:34:22 Start to run
+2016/08/23 09:35:22 MobileNumber->MerchantInfo's token changed to 1471915006 start to Get http://127.0.0.1:9001/flushall
+2016/08/23 09:35:22 MobileNumber->MerchantInfo result OK
+2016/08/23 09:36:23 MobileNumber->MerchantInfo's token changed to 1471915007 start to Get http://127.0.0.1:9001/flushall
+2016/08/23 09:36:23 MobileNumber->MerchantInfo result OK
+2016/08/23 09:37:24 MobileNumber->MerchantInfo's token 1471915007 is not changed
+2016/08/23 09:38:25 MobileNumber->MerchantInfo's token 1471915007 is not changed
 */
 func main() {
 	log.Print("Start to run")
