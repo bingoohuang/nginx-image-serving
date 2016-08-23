@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -26,30 +27,34 @@ insert into cache_flush_trigger values('MobileNumber->MerchantInfo',
 update cache_flush_trigger set token = 0 where job_name = 'MobileNumber->MerchantInfo';
 
 编译: go build gosrc/cacheflushtrigger.go
-运行命令: ./cacheflushtrigger gosrc/cacheflushtrigger.toml
+运行命令: nohup ./cacheflushtrigger gosrc/cacheflushtrigger.toml > cacheflushtrigger.log &
 */
 func main() {
+	logChan := make(chan string)
+	go func() {
+		for msg := range logChan {
+			log.Print(msg)
+		}
+	}()
+
+	logChan <- "Start to run"
 	config := readConfig()
 
-	gocron.Every(60).Seconds().Do(mainTask, config)
+	gocron.Every(60).Seconds().Do(mainTask, config, logChan)
 	<-gocron.Start()
 }
 
-func mainTask(config CacheFlushTriggerConfig) {
+func mainTask(config CacheFlushTriggerConfig, logChan chan string) {
 	db := getDb(config.Db)
-	defer db.Close()
+	var wg sync.WaitGroup
 
-	jobs := queryJobs(db)
-	for _, job := range jobs {
-		if job.token != 0 {
-			continue
-		}
+	jobsCount := doJobs(db, logChan)
+	wg.Add(jobsCount)
 
-		_, err := httpGet(job)
-		if err == nil {
-			updateJobToken(db, job)
-		}
-	}
+	go func() {
+		wg.Wait()
+		db.Close()
+	}()
 }
 
 type CacheFlushTriggerConfig struct {
@@ -70,21 +75,6 @@ func readConfig() CacheFlushTriggerConfig {
 	return config
 }
 
-func httpGet(job *Job) (string, error) {
-	log.Print(job.jobName, " ", job.flushUrl, " ")
-	resp, err := http.Get(job.flushUrl)
-	if err != nil {
-		log.Print(err)
-		return "", err
-	}
-
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	bodyStr := string(body)
-	log.Print(bodyStr)
-	return bodyStr, err
-}
-
 func updateJobToken(db *sql.DB, job *Job) {
 	stmt, err := db.Prepare("update cache_flush_trigger set token = ? where job_name = ?")
 	checkJobErr(err)
@@ -101,29 +91,54 @@ type Job struct {
 	token    int64
 }
 
-func queryJobs(db *sql.DB) (jobs []*Job) {
+func doJobs(db *sql.DB, logChan chan string) int {
 	rows, err := db.Query("select job_name, job_desc, " +
 		"flush_url, token from cache_flush_trigger " +
 		"where token = 0")
 	checkJobErr(err)
 	defer rows.Close()
 
+	jobsCount := 0
 	for rows.Next() {
 		row := new(Job)
 
 		err := rows.Scan(&row.jobName, &row.jobDesc, &row.flushUrl, &row.token)
 		checkJobErr(err)
+		jobsCount++
 
-		jobs = append(jobs, row)
+		go doJob(db, row, logChan)
 	}
+
 	err = rows.Err()
 	checkJobErr(err)
 
-	if len(jobs) == 0 {
-		log.Print("no available jobs for cache flush")
+	if jobsCount == 0 {
+		logChan <- "no available jobs for cache flush"
 	}
 
-	return
+	return jobsCount
+}
+
+func doJob(db *sql.DB, job *Job, logChan chan string) {
+	err := httpGet(job, logChan)
+	if err == nil {
+		updateJobToken(db, job)
+	}
+}
+
+func httpGet(job *Job, logChan chan string) error {
+	logChan <- job.jobName + " " + job.flushUrl
+	resp, err := http.Get(job.flushUrl)
+	if err != nil {
+		logChan <- err.Error()
+		return err
+	}
+
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	bodyStr := string(body)
+	logChan <- job.jobName + " " + bodyStr
+	return err
 }
 
 func getDb(dataSourceName string) *sql.DB {

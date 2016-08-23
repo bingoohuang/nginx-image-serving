@@ -102,7 +102,7 @@ end
 -- opt: 相关MySQL信息，表信息等
 --    opt.key: 缓存主键
 --    opt.dataSourceName MySQL连接字符串，比如root:my-secret-pw@192.168.99.100:13306/dba
---    opt.dictTableName  字典表的表名
+--    opt.querySql  查询用的SQL语句
 --    opt.pkColumnName   字典表的主键字段名
 --    opt.luaSharedDictName LUA共享字典名
 --    opt.dictLockName  锁名称，在从MySQL刷数据时防止缓存失效风暴
@@ -138,7 +138,7 @@ function _M.get(opt)
     local db, err = connectMySQL(opt.dataSourceName)
     if not db then unlock(locker) error(err) end
 
-    local rows, err, errcode, sqlstate = db:query("select * from " .. opt.dictTableName)
+    local rows, err, errcode, sqlstate = db:query(opt.querySql)
     if rows then
         setToCache(dict, rows, opt.pkColumnName)
         dict:set(loadedKey, "yes")
