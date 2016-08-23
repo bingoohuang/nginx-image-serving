@@ -2,15 +2,16 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"github.com/BurntSushi/toml"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jasonlvhit/gocron"
+	"github.com/lunny/nodb"
+	"github.com/lunny/nodb/config"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
-	"sync"
-	"time"
 )
 
 /*
@@ -19,42 +20,31 @@ create table cache_flush_trigger (
     job_name varchar(30) not null comment '刷新任务名称',
     job_desc varchar(100) not null comment '刷新任务描述',
     flush_url varchar(100) not null comment '刷新调用的URL',
-    token bigint not null comment '令牌值，需要刷新时，重置令牌值为0',
+    token bigint not null comment '令牌值，需要刷新时，重置令牌值为新值',
     primary key (job_name)
 )engine=innodb default charset=utf8mb4 comment='缓存刷新配置';
 insert into cache_flush_trigger values('MobileNumber->MerchantInfo',
     '手机号码查商户信息缓存刷新', 'http://127.0.0.1:9001/flushall', 0);
-update cache_flush_trigger set token = 0 where job_name = 'MobileNumber->MerchantInfo';
+update cache_flush_trigger set token = token + 1 where job_name = 'MobileNumber->MerchantInfo';
 
 编译: go build gosrc/cacheflushtrigger.go
 运行命令: nohup ./cacheflushtrigger gosrc/cacheflushtrigger.toml > cacheflushtrigger.log &
 */
 func main() {
-	logChan := make(chan string)
-	go func() {
-		for msg := range logChan {
-			log.Print(msg)
-		}
-	}()
-
-	logChan <- "Start to run"
+	log.Print("Start to run")
 	config := readConfig()
+	nodb, tempDir, _ := OpenTemp()
+	defer os.RemoveAll(tempDir)
 
-	gocron.Every(60).Seconds().Do(mainTask, config, logChan)
+	gocron.Every(60).Seconds().Do(mainTask, config, nodb)
 	<-gocron.Start()
 }
 
-func mainTask(config CacheFlushTriggerConfig, logChan chan string) {
+func mainTask(config CacheFlushTriggerConfig, nodb *Nodb) {
 	db := getDb(config.Db)
-	var wg sync.WaitGroup
+	defer db.Close()
 
-	jobsCount := doJobs(db, logChan)
-	wg.Add(jobsCount)
-
-	go func() {
-		wg.Wait()
-		db.Close()
-	}()
+	doJobs(db, nodb)
 }
 
 type CacheFlushTriggerConfig struct {
@@ -75,69 +65,58 @@ func readConfig() CacheFlushTriggerConfig {
 	return config
 }
 
-func updateJobToken(db *sql.DB, job *Job) {
-	stmt, err := db.Prepare("update cache_flush_trigger set token = ? where job_name = ?")
-	checkJobErr(err)
-	defer stmt.Close()
-
-	_, err = stmt.Exec(time.Now().Unix(), job.jobName)
-	checkJobErr(err)
-}
-
 type Job struct {
 	jobName  string
 	jobDesc  string
 	flushUrl string
-	token    int64
+	token    string
 }
 
-func doJobs(db *sql.DB, logChan chan string) int {
+func doJobs(db *sql.DB, nodb *Nodb) {
 	rows, err := db.Query("select job_name, job_desc, " +
-		"flush_url, token from cache_flush_trigger " +
-		"where token = 0")
+		"flush_url, token from cache_flush_trigger ")
 	checkJobErr(err)
 	defer rows.Close()
 
-	jobsCount := 0
 	for rows.Next() {
 		row := new(Job)
 
 		err := rows.Scan(&row.jobName, &row.jobDesc, &row.flushUrl, &row.token)
 		checkJobErr(err)
-		jobsCount++
 
-		go doJob(db, row, logChan)
+		doJob(row, nodb)
 	}
 
 	err = rows.Err()
 	checkJobErr(err)
-
-	if jobsCount == 0 {
-		logChan <- "no available jobs for cache flush"
-	}
-
-	return jobsCount
 }
 
-func doJob(db *sql.DB, job *Job, logChan chan string) {
-	err := httpGet(job, logChan)
+func doJob(job *Job, nodb *Nodb) {
+	token, err := nodb.Get(job.jobName)
+	if token == job.token {
+		log.Print(job.jobName, "'s token ", job.token, " is not changed ")
+		return
+	}
+
+	log.Print(job.jobName, "'s token changed to ", job.token, " start to Get ", job.flushUrl)
+
+	err = httpGet(job)
 	if err == nil {
-		updateJobToken(db, job)
+		nodb.Set(job.jobName, job.token)
 	}
 }
 
-func httpGet(job *Job, logChan chan string) error {
-	logChan <- job.jobName + " " + job.flushUrl
+func httpGet(job *Job) error {
 	resp, err := http.Get(job.flushUrl)
 	if err != nil {
-		logChan <- err.Error()
+		log.Print(job.jobName, " result ", err.Error())
 		return err
 	}
 
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	bodyStr := string(body)
-	logChan <- job.jobName + " " + bodyStr
+	log.Print(job.jobName, " result ", bodyStr)
 	return err
 }
 
@@ -152,4 +131,37 @@ func checkJobErr(err error) {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+type Nodb struct {
+	db *nodb.DB
+}
+
+func (db *Nodb) Set(key, value string) error {
+	return db.db.Set([]byte(key), []byte(value))
+}
+
+func (db *Nodb) Get(key string) (string, error) {
+	value, err := db.db.Get([]byte(key))
+	str := string(value)
+	return str, err
+}
+
+func (db *Nodb) Exists(key string) bool {
+	value, _ := db.db.Exists([]byte(key))
+	return value == 1
+}
+
+func OpenTemp() (*Nodb, string, error) {
+	cfg := new(config.Config)
+
+	cfg.DataDir, _ = ioutil.TempDir(os.TempDir(), "nodb")
+	nodbs, err := nodb.Open(cfg)
+	if err != nil {
+		fmt.Printf("nodb: error opening db: %v", err)
+	}
+
+	db, err := nodbs.Select(0)
+
+	return &Nodb{db}, cfg.DataDir, err
 }
