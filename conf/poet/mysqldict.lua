@@ -95,14 +95,14 @@ function _M.flushAll(opt)
     return "OK"
 end
 
--- lua_shared_dict mysqldict_demo 128m;
--- lua_shared_dict mysqlDict_lock 100k;
+-- lua_shared_dict mysqldict_demo 1m;
+-- lua_shared_dict mysqlDict_lock 1k;
 -- 从缓存中获取数据
 
 -- opt: 相关MySQL信息，表信息等
 --    opt.key: 缓存主键
 --    opt.dataSourceName MySQL连接字符串，比如root:my-secret-pw@192.168.99.100:13306/dba
---    opt.querySql  查询用的SQL语句
+--    opt.queryAllSql 查询用的SQL语句，用于一次性从数据库中查询所有需要缓存的数据，一次性缓存后就不再访问数据库了
 --    opt.pkColumnName   字典表的主键字段名
 --    opt.luaSharedDictName LUA共享字典名
 --    opt.dictLockName  锁名称，在从MySQL刷数据时防止缓存失效风暴
@@ -138,7 +138,7 @@ function _M.get(opt)
     local db, err = connectMySQL(opt.dataSourceName)
     if not db then unlock(locker) error(err) end
 
-    local rows, err, errcode, sqlstate = db:query(opt.querySql)
+    local rows, err, errcode, sqlstate = db:query(opt.queryAllSql)
     if rows then
         setToCache(dict, rows, opt.pkColumnName)
         dict:set(loadedKey, "yes")

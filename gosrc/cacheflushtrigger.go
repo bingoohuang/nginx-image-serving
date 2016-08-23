@@ -39,7 +39,7 @@ tail -f cacheflushtrigger.log
 2016/08/23 09:38:25 MobileNumber->MerchantInfo's token 1471915007 is not changed
 */
 func main() {
-	log.Print("Start to run")
+	log.Print(`Start to run`)
 	config := readConfig()
 	nodb, tempDir, _ := OpenTemp()
 	defer os.RemoveAll(tempDir)
@@ -60,7 +60,7 @@ type CacheFlushTriggerConfig struct {
 }
 
 func readConfig() CacheFlushTriggerConfig {
-	fpath := "cacheflushtrigger.toml"
+	fpath := `cacheflushtrigger.toml`
 	if len(os.Args) > 1 {
 		fpath = os.Args[1]
 	}
@@ -81,8 +81,8 @@ type Job struct {
 }
 
 func doJobs(db *sql.DB, nodb *Nodb) {
-	rows, err := db.Query("select job_name, job_desc, " +
-		"flush_url, token from cache_flush_trigger ")
+	rows, err := db.Query(`select job_name, job_desc, ` +
+		`flush_url, token from cache_flush_trigger `)
 	checkJobErr(err)
 	defer rows.Close()
 
@@ -102,11 +102,11 @@ func doJobs(db *sql.DB, nodb *Nodb) {
 func doJob(job *Job, nodb *Nodb) {
 	token, err := nodb.Get(job.jobName)
 	if token == job.token {
-		log.Print(job.jobName, "'s token ", job.token, " is not changed ")
+		log.Print(job.jobName, `'s token `, job.token, ` is not changed `)
 		return
 	}
 
-	log.Print(job.jobName, "'s token changed to ", job.token, " start to Get ", job.flushUrl)
+	log.Print(job.jobName, `'s token changed to `, job.token, ` start to Get `, job.flushUrl)
 
 	err = httpGet(job)
 	if err == nil {
@@ -117,19 +117,19 @@ func doJob(job *Job, nodb *Nodb) {
 func httpGet(job *Job) error {
 	resp, err := http.Get(job.flushUrl)
 	if err != nil {
-		log.Print(job.jobName, " result ", err.Error())
+		log.Print(job.jobName, ` result `, err.Error())
 		return err
 	}
 
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	bodyStr := string(body)
-	log.Print(job.jobName, " result ", bodyStr)
+	log.Print(job.jobName, ` result `, bodyStr)
 	return err
 }
 
 func getDb(dataSourceName string) *sql.DB {
-	db, err := sql.Open("mysql", dataSourceName)
+	db, err := sql.Open(`mysql`, dataSourceName)
 	checkJobErr(err)
 
 	return db
@@ -163,10 +163,10 @@ func (db *Nodb) Exists(key string) bool {
 func OpenTemp() (*Nodb, string, error) {
 	cfg := new(config.Config)
 
-	cfg.DataDir, _ = ioutil.TempDir(os.TempDir(), "nodb")
+	cfg.DataDir, _ = ioutil.TempDir(os.TempDir(), `nodb`)
 	nodbs, err := nodb.Open(cfg)
 	if err != nil {
-		fmt.Printf("nodb: error opening db: %v", err)
+		fmt.Printf(`nodb: error opening db: %v`, err)
 	}
 
 	db, err := nodbs.Select(0)
