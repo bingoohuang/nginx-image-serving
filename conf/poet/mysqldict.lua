@@ -115,15 +115,14 @@ local function syncData(opt)
     return true
 end
 
+local startTimer -- 必须提前在此定义函数名，以方便syncJob调用
 local function syncJob(premature, opt)
     if premature then return end
-    if syncData(opt) then opt.startTimer(opt) end
+    if syncData(opt) then startTimer(opt) end
 end
 
-local function startTimer(opt)
+startTimer = function (opt)
     local delay = opt.timerDurationSeconds or 60 -- 60 seconds
-    opt.startTimer = startTimer
-
     local ok, err = ngx.timer.at(delay, syncJob, opt)
     if not ok then
         ngx.log(ngx.ERR, "failed to create the timer: ", err)
