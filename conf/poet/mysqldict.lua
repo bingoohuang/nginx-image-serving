@@ -121,7 +121,7 @@ local function syncJob(premature, opt)
 end
 
 local function startTimer(opt)
-    local delay = opt.timerDurationSeconds or 10 -- 60 seconds
+    local delay = opt.timerDurationSeconds or 60 -- 60 seconds
     opt.startTimer = startTimer
 
     local ok, err = ngx.timer.at(delay, syncJob, opt)
