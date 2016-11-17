@@ -69,6 +69,74 @@ local function startsWith(str, substr)
     return string.find(str, substr) == 1
 end
 
+local function createQueryLastUpdateSql(opt)
+    local originalSql = opt.queryAllSql
+    -- ALTER TABLE `xxx` ADD COLUMN `sync_update_time`  TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+    local sql, n, err = ngx.re.gsub(originalSql, "select\\s+(.*?)\\s+from\\s+(.*)", "select max(sync_update_time) as max_update_time from $2", "i")
+    if not sql then ngx.log(ngx.ERR, "error: ", err) return nil end
+
+    ngx.log(ngx.ERR, sql)
+    return sql
+end
+
+-- return true : need to go on looping
+-- return false: end up looping
+local function syncData(opt)
+    local sql = createQueryLastUpdateSql(opt)
+    if not sql then return false end
+
+    local db, err = connectMySQL(opt.dataSourceName)
+    if not db then ngx.log(ngx.ERR, "failed to connect MySQL: ", err) return true end
+
+    local rows, err, errcode, sqlstate = db:query(sql)
+    if err then
+        ngx.log(ngx.ERR, "error: ", err)
+        closeDb(db)
+        return false
+    end
+
+    if rows then
+        ngx.log(ngx.ERR, "get max update time" .. cjson.encode(rows))
+        local prefix = (opt.prefix or "__default_prefix") .. "."
+        local maxUpdateTimeKey = prefix .. "__max_update_time__" .. opt.luaSharedDictName
+        local dict = shared[opt.luaSharedDictName]
+        local maxUpdateTime = dict:get(maxUpdateTimeKey)
+        ngx.log(ngx.ERR, "maxUpdateTime in dict " .. (maxUpdateTime or "nil"))
+        local maxUpdateTimeInDb = rows[1]["max_update_time"]
+        ngx.log(ngx.ERR, "maxUpdateTime in db " .. maxUpdateTimeInDb)
+        if maxUpdateTimeInDb ~= maxUpdateTime then
+            dict:set(maxUpdateTimeKey, maxUpdateTimeInDb)
+            -- 失效的时候，也同时终止timer的定时运行，等待下次访问时重新启动
+            if maxUpdateTime ~= nil then _M.flushAll(opt) return false end
+        end
+    end
+
+    closeDb(db)
+    return true
+end
+
+local function syncJob(premature, opt)
+    if premature then return end
+    if syncData(opt) then opt.startTimer(opt) end
+end
+
+local function startTimer(opt)
+    local delay = opt.timerDurationSeconds or 10 -- 60 seconds
+    opt.startTimer = startTimer
+
+    local ok, err = ngx.timer.at(delay, syncJob, opt)
+    if not ok then
+        ngx.log(ngx.ERR, "failed to create the timer: ", err)
+    end
+end
+
+local function flushAllPrefix(dict, prefix)
+    local keys = dict:get_keys(0)
+    for index,dictKey in pairs(keys) do
+        if startsWith(dictKey, prefix) then dict:delete(dictKey) end
+    end
+end
+
 -- 清除所有缓存
 -- opt: 相关MySQL信息，表信息等
 --    opt.luaSharedDictName LUA共享字典名
@@ -88,10 +156,7 @@ function _M.flushAll(opt)
     if not locked then return "failed to get lock" end
 
     -- dict:flush_all() -- 清除已有缓存数据
-    local keys = dict:get_keys(0)
-    for index,dictKey in pairs(keys) do
-        if startsWith(dictKey, prefix) then dict:delete(dictKey) end
-    end
+    flushAllPrefix(dict, prefix)
 
     locker:unlock()
     return "OK"
@@ -117,6 +182,7 @@ function _M.get(opt)
     local prefix = (opt.prefix or "__default_prefix") .. "."
     local cacheKey = prefix .. opt.key
     local loadedKey = prefix .. "__loaded_key__" .. opt.luaSharedDictName
+    local timerStartedKey = prefix .. "__timer_started_key__" .. opt.luaSharedDictName
 
     -- 尝试从缓存中读取，如果读取到，直接返回
     local val = getFromCache(dict, cacheKey)
@@ -137,17 +203,27 @@ function _M.get(opt)
     local loaded = getFromCache(dict, loadedKey)
     if loaded == "yes" then locker:unlock() return nil end
 
-    dict:flush_all() -- 清除已有缓存数据
+    flushAllPrefix(dict, prefix) -- 清除已有缓存数据
 
     -- 从数据库字典表中加载数据到缓存
     local db, err = connectMySQL(opt.dataSourceName)
     if not db then locker:unlock() error(err) end
     local rows, err, errcode, sqlstate = db:query(opt.queryAllSql)
     if rows then
+        ngx.log(ngx.ERR, "get rows" .. cjson.encode(rows))
         setToCache(dict, prefix, rows, opt.pkColumnName)
         dict:set(loadedKey, "yes")
     end
-    locker:unlock() closeDb(db)
+    closeDb(db)
+
+    -- 在锁定的状态下检查定时同步是否开启
+    local timerStarted = getFromCache(dict, timerStartedKey)
+    if timerStarted ~= "yes" then
+        startTimer(opt)
+        dict:set(timerStartedKey, "yes")
+    end
+
+    locker:unlock()
     if not rows then error("bad result: " .. err) end
 
     return getFromCache(dict, cacheKey)
