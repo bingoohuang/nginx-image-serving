@@ -12,14 +12,34 @@ local _M = {
     _VERSION = '0.1'
 }
 
-local shared = ngx.shared
 local cjson = require "cjson"
 local restyLock = require "resty.lock"
 local mysql = require "resty.mysql"
+local ngx_re_match = ngx.re.match
+local ngx_re_gsub = ngx.re.gsub
 
 local function error(msg)
     ngx.status = 500 ngx.say(msg)
     ngx.log(ngx.ERR, msg) ngx.exit(500)
+end
+
+local function createDict(opt)
+    opt.dict = opt.dict or ngx.shared[opt.luaSharedDictName]
+end
+local function createPrefix(opt)
+    opt.prefix = (opt.prefix or "__default_prefix") .. "."
+end
+local function createCacheKey(opt)
+    opt.cacheKey = opt.cacheKey or (opt.prefix .. opt.key)
+end
+local function createLoadedKey(opt)
+    opt.loadedKey = opt.loadedKey or (opt.prefix .. "__loaded_key__" .. opt.luaSharedDictName)
+end
+local function createTimerStartedKey(opt)
+    opt.timerStartedKey = opt.timerStartedKey or (opt.prefix .. "__timer_started_key__" .. opt.luaSharedDictName)
+end
+local function createMaxUpdateTimeKey(opt)
+    opt.maxUpdateTimeKey = opt.maxUpdateTimeKey or (opt.prefix .. "__max_update_time__" .. opt.luaSharedDictName)
 end
 
 local function connectMySQL(dataSourceName)
@@ -29,7 +49,7 @@ local function connectMySQL(dataSourceName)
 
     -- user:password@addr:port/dbname[?param1=value1&paramN=valueN]
     local regex = "(.+?):(.+?)@(.+?):(.+?)/(.+)"
-    local m = ngx.re.match(dataSourceName, regex)
+    local m = ngx_re_match(dataSourceName, regex)
     if not m then return nil, "dataSourceName format is not recognized" end
 
     local ok, err, errno, sqlstate = db:connect {
@@ -70,25 +90,24 @@ local function startsWith(str, substr)
 end
 
 local function createQueryLastUpdateSql(opt)
-    local originalSql = opt.queryAllSql
-    -- ALTER TABLE `xxx` ADD COLUMN `sync_update_time`  TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
-    local sql, n, err = ngx.re.gsub(originalSql, "select\\s+(.*?)\\s+from\\s+(.*)", "select max(sync_update_time) as max_update_time from $2", "i")
-    if not sql then ngx.log(ngx.ERR, "error: ", err) return nil end
+    if opt.queryMaxUpdateTimeSql then return opt.queryMaxUpdateTimeSql end
 
-    ngx.log(ngx.ERR, sql)
-    return sql
+    -- ALTER TABLE `xxx` ADD COLUMN `sync_update_time`  TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+    opt.queryMaxUpdateTimeSql, n, err = ngx_re_gsub(opt.queryAllSql, "select\\s+(.*?)\\s+from\\s+(.*)", "select max(sync_update_time) as max_update_time from $2", "i")
+    if not opt.queryMaxUpdateTimeSql then ngx.log(ngx.ERR, "error: ", err)
+    else ngx.log(ngx.ERR, opt.queryMaxUpdateTimeSql) end
 end
 
 -- return true : need to go on looping
 -- return false: end up looping
 local function syncData(opt)
-    local sql = createQueryLastUpdateSql(opt)
-    if not sql then return false end
+    createQueryLastUpdateSql(opt)
+    if not opt.queryMaxUpdateTimeSql then return false end
 
     local db, err = connectMySQL(opt.dataSourceName)
     if not db then ngx.log(ngx.ERR, "failed to connect MySQL: ", err) return true end
 
-    local rows, err, errcode, sqlstate = db:query(sql)
+    local rows, err, errcode, sqlstate = db:query(opt.queryMaxUpdateTimeSql)
     if err then
         ngx.log(ngx.ERR, "error: ", err)
         closeDb(db)
@@ -96,16 +115,12 @@ local function syncData(opt)
     end
 
     if rows then
-        ngx.log(ngx.ERR, "get max update time" .. cjson.encode(rows))
-        local prefix = (opt.prefix or "__default_prefix") .. "."
-        local maxUpdateTimeKey = prefix .. "__max_update_time__" .. opt.luaSharedDictName
-        local dict = shared[opt.luaSharedDictName]
-        local maxUpdateTime = dict:get(maxUpdateTimeKey)
-        ngx.log(ngx.ERR, "maxUpdateTime in dict " .. (maxUpdateTime or "nil"))
+        createMaxUpdateTimeKey(opt)
+        local maxUpdateTime = opt.dict:get(opt.maxUpdateTimeKey)
         local maxUpdateTimeInDb = rows[1]["max_update_time"]
-        ngx.log(ngx.ERR, "maxUpdateTime in db " .. maxUpdateTimeInDb)
+        ngx.log(ngx.ERR, "maxUpdateTime in dict [", maxUpdateTime, "] vs db [", maxUpdateTimeInDb, "]")
         if maxUpdateTimeInDb ~= maxUpdateTime then
-            dict:set(maxUpdateTimeKey, maxUpdateTimeInDb)
+            opt.dict:set(opt.maxUpdateTimeKey, maxUpdateTimeInDb)
             -- 失效的时候，也同时终止timer的定时运行，等待下次访问时重新启动
             if maxUpdateTime ~= nil then _M.flushAll(opt) return false end
         end
@@ -124,12 +139,11 @@ end
 startTimer = function (opt)
     local delay = opt.timerDurationSeconds or 60 -- 60 seconds
     local ok, err = ngx.timer.at(delay, syncJob, opt)
-    if not ok then
-        ngx.log(ngx.ERR, "failed to create the timer: ", err)
-    end
+    if not ok then ngx.log(ngx.ERR, "failed to create the timer: ", err) end
 end
 
 local function flushAllPrefix(dict, prefix)
+    ngx.log(ngx.ERR, "flush all in dict with prefix [", prefix, "]")
     local keys = dict:get_keys(0)
     for index,dictKey in pairs(keys) do
         if startsWith(dictKey, prefix) then dict:delete(dictKey) end
@@ -145,17 +159,17 @@ end
 -- 返回 清除结果
 --    OK 清除成功， 否则为错误信息
 function _M.flushAll(opt)
-    local dict = shared[opt.luaSharedDictName]
-    local prefix = (opt.prefix or "__default_prefix") .. "."
-    local loadedKey = prefix .. "__loaded_key__" .. opt.luaSharedDictName
+    createDict(opt)
+    createPrefix(opt)
+    createLoadedKey(opt)
 
     -- 尝试获取锁，获取不到，直接返回错误信息
     local locker = restyLock:new(opt.dictLockName)
-    local locked, err = locker:lock(loadedKey)
+    local locked, err = locker:lock(opt.loadedKey)
     if not locked then return "failed to get lock" end
 
     -- dict:flush_all() -- 清除已有缓存数据
-    flushAllPrefix(dict, prefix)
+    flushAllPrefix(opt.dict, opt.prefix)
 
     locker:unlock()
     return "OK"
@@ -177,32 +191,31 @@ end
 -- 返回 val
 --    缓存key对应的取值，nil表示缓存值不存在
 function _M.get(opt)
-    local dict = shared[opt.luaSharedDictName]
-    local prefix = (opt.prefix or "__default_prefix") .. "."
-    local cacheKey = prefix .. opt.key
-    local loadedKey = prefix .. "__loaded_key__" .. opt.luaSharedDictName
-    local timerStartedKey = prefix .. "__timer_started_key__" .. opt.luaSharedDictName
+    createDict(opt)
+    createPrefix(opt)
+    createLoadedKey(opt)
+    createCacheKey(opt)
 
     -- 尝试从缓存中读取，如果读取到，直接返回
-    local val = getFromCache(dict, cacheKey)
+    local val = getFromCache(opt.dict, opt.cacheKey)
     if val then return val end
     -- 查看缓存数据是否已经加载，如果已经加载，则直接返回nil
-    local loaded = getFromCache(dict, loadedKey)
+    local loaded = getFromCache(opt.dict, opt.loadedKey)
     if loaded == "yes" then return nil end
 
     -- 尝试获取锁，获取不到，直接返回nil
     local locker = restyLock:new(opt.dictLockName)
-    local locked, err = locker:lock(loadedKey)
+    local locked, err = locker:lock(opt.loadedKey)
     if not locked then return nil end
 
     -- 获取锁后，再次尝试从缓存中读取（因为可能在等待锁时，缓存已经设定好）
-    local val = getFromCache(dict, cacheKey)
+    local val = getFromCache(opt.dict, opt.cacheKey)
     if val then locker:unlock() return val end
     -- 查看缓存数据是否已经加载，如果已经加载，则直接返回nil
-    local loaded = getFromCache(dict, loadedKey)
+    local loaded = getFromCache(opt.dict, opt.loadedKey)
     if loaded == "yes" then locker:unlock() return nil end
 
-    flushAllPrefix(dict, prefix) -- 清除已有缓存数据
+    flushAllPrefix(opt.dict, opt.prefix) -- 清除已有缓存数据
 
     -- 从数据库字典表中加载数据到缓存
     local db, err = connectMySQL(opt.dataSourceName)
@@ -210,22 +223,23 @@ function _M.get(opt)
     local rows, err, errcode, sqlstate = db:query(opt.queryAllSql)
     if rows then
         ngx.log(ngx.ERR, "get rows" .. cjson.encode(rows))
-        setToCache(dict, prefix, rows, opt.pkColumnName)
-        dict:set(loadedKey, "yes")
+        setToCache(opt.dict, opt.prefix, rows, opt.pkColumnName)
+        opt.dict:set(opt.loadedKey, "yes")
     end
     closeDb(db)
 
     -- 在锁定的状态下检查定时同步是否开启
-    local timerStarted = getFromCache(dict, timerStartedKey)
+    createTimerStartedKey(opt)
+    local timerStarted = getFromCache(opt.dict, opt.timerStartedKey)
     if timerStarted ~= "yes" then
         startTimer(opt)
-        dict:set(timerStartedKey, "yes")
+        opt.dict:set(opt.timerStartedKey, "yes")
     end
 
     locker:unlock()
     if not rows then error("bad result: " .. err) end
 
-    return getFromCache(dict, cacheKey)
+    return getFromCache(opt.dict, opt.cacheKey)
 end
 
 return _M
