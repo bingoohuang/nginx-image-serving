@@ -108,11 +108,9 @@ local function syncData(opt)
     if not db then ngx.log(ngx.ERR, "failed to connect MySQL: ", err) return true end
 
     local rows, err, errcode, sqlstate = db:query(opt.queryMaxUpdateTimeSql)
-    if err then
-        ngx.log(ngx.ERR, "error: ", err)
-        closeDb(db)
-        return false
-    end
+    closeDb(db)
+
+    if err then ngx.log(ngx.ERR, "error: ", err) return false end
 
     if rows then
         createMaxUpdateTimeKey(opt)
@@ -126,11 +124,10 @@ local function syncData(opt)
         end
     end
 
-    closeDb(db)
     return true
 end
 
-local startTimer -- 必须提前在此定义函数名，以方便syncJob调用
+local startTimer -- 提前在此定义函数名，否则syncJob会报告找不到全局变量startTimer
 local function syncJob(premature, opt)
     if premature then return end
     if syncData(opt) then startTimer(opt) end
