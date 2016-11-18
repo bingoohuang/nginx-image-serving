@@ -17,14 +17,19 @@ local restyLock = require "resty.lock"
 local mysql = require "resty.mysql"
 local ngx_re_match = ngx.re.match
 local ngx_re_gsub = ngx.re.gsub
+local cjson_decode = cjson.decode
+local cjson_encode = cjson.encode
+local ngx_log = ngx.log
+local ngx_shared = ngx.shared
+local string_find = string.find
 
 local function error(msg)
     ngx.status = 500 ngx.say(msg)
-    ngx.log(ngx.ERR, msg) ngx.exit(500)
+    ngx_log(ngx.ERR, msg) ngx.exit(500)
 end
 
 local function createDict(opt)
-    opt.dict = opt.dict or ngx.shared[opt.luaSharedDictName]
+    opt.dict = opt.dict or ngx_shared[opt.luaSharedDictName]
 end
 local function createPrefix(opt)
     opt.prefix = (opt.prefix or "__default_prefix") .. "."
@@ -70,13 +75,13 @@ local function getFromCache(dict, key)
    local value = dict:get(key)
    if not value then return nil end
    if value == "yes" then return value end
-   return cjson.decode(value)
+   return cjson_decode(value)
 end
 
 local function setToCache(dict, prefix, rows, pkColumnName)
    for k,v in pairs(rows) do
        local key = prefix .. v[pkColumnName]
-       local val = cjson.encode(v)
+       local val = cjson_encode(v)
        local succ, err, forcible = dict:set(key, val)
    end
 end
@@ -86,7 +91,7 @@ local function startsWith(str, substr)
         return nil, "the string or the sub-stirng parameter is nil"
     end
 
-    return string.find(str, substr) == 1
+    return string_find(str, substr) == 1
 end
 
 local function createQueryLastUpdateSql(opt)
@@ -94,8 +99,8 @@ local function createQueryLastUpdateSql(opt)
 
     -- ALTER TABLE `xxx` ADD COLUMN `sync_update_time`  TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
     opt.queryMaxUpdateTimeSql, n, err = ngx_re_gsub(opt.queryAllSql, "select\\s+(.*?)\\s+from\\s+(.*)", "select max(sync_update_time) as max_update_time from $2", "i")
-    if not opt.queryMaxUpdateTimeSql then ngx.log(ngx.ERR, "error: ", err)
-    else ngx.log(ngx.ERR, opt.queryMaxUpdateTimeSql) end
+    if not opt.queryMaxUpdateTimeSql then ngx_log(ngx.ERR, "error: ", err)
+    else ngx_log(ngx.ERR, opt.queryMaxUpdateTimeSql) end
 end
 
 -- return true : need to go on looping
@@ -105,18 +110,18 @@ local function syncData(opt)
     if not opt.queryMaxUpdateTimeSql then return false end
 
     local db, err = connectMySQL(opt.dataSourceName)
-    if not db then ngx.log(ngx.ERR, "failed to connect MySQL: ", err) return true end
+    if not db then ngx_log(ngx.ERR, "failed to connect MySQL: ", err) return true end
 
     local rows, err, errcode, sqlstate = db:query(opt.queryMaxUpdateTimeSql)
     closeDb(db)
 
-    if err then ngx.log(ngx.ERR, "error: ", err) return false end
+    if err then ngx_log(ngx.ERR, "error: ", err) return false end
 
     if rows then
         createMaxUpdateTimeKey(opt)
         local maxUpdateTime = opt.dict:get(opt.maxUpdateTimeKey)
         local maxUpdateTimeInDb = rows[1]["max_update_time"]
-        ngx.log(ngx.ERR, "maxUpdateTime in dict [", maxUpdateTime, "] vs db [", maxUpdateTimeInDb, "]")
+        ngx_log(ngx.ERR, "maxUpdateTime in dict [", maxUpdateTime, "] vs db [", maxUpdateTimeInDb, "]")
         if maxUpdateTimeInDb ~= maxUpdateTime then
             opt.dict:set(opt.maxUpdateTimeKey, maxUpdateTimeInDb)
             -- 失效的时候，也同时终止timer的定时运行，等待下次访问时重新启动
@@ -136,11 +141,11 @@ end
 startTimer = function (opt)
     local delay = opt.timerDurationSeconds or 60 -- 60 seconds
     local ok, err = ngx.timer.at(delay, syncJob, opt)
-    if not ok then ngx.log(ngx.ERR, "failed to create the timer: ", err) end
+    if not ok then ngx_log(ngx.ERR, "failed to create the timer: ", err) end
 end
 
 local function flushAllPrefix(dict, prefix)
-    ngx.log(ngx.ERR, "flush all in dict with prefix [", prefix, "]")
+    ngx_log(ngx.ERR, "flush all in dict with prefix [", prefix, "]")
     local keys = dict:get_keys(0)
     for index,dictKey in pairs(keys) do
         if startsWith(dictKey, prefix) then dict:delete(dictKey) end
@@ -184,6 +189,7 @@ end
 --    opt.luaSharedDictName LUA共享字典名
 --    opt.dictLockName  锁名称，在从MySQL刷数据时防止缓存失效风暴，可以多个luaSharedDictName共用
 --    opt.prefix  可选。前缀名，当多个不同缓存使用同一个luaSharedDictName和dictLockName时，使用前缀加以区分
+--    opt.timerDurationSeconds 可选。缓存更新检查时间间隔描述。默认60秒。
 
 -- 返回 val
 --    缓存key对应的取值，nil表示缓存值不存在
@@ -219,7 +225,7 @@ function _M.get(opt)
     if not db then locker:unlock() error(err) end
     local rows, err, errcode, sqlstate = db:query(opt.queryAllSql)
     if rows then
-        ngx.log(ngx.ERR, "get rows" .. cjson.encode(rows))
+        ngx_log(ngx.ERR, "get rows" .. cjson_encode(rows))
         setToCache(opt.dict, opt.prefix, rows, opt.pkColumnName)
         opt.dict:set(opt.loadedKey, "yes")
     end
