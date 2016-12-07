@@ -98,7 +98,8 @@ local function createQueryLastUpdateSql(opt)
     if opt.queryMaxUpdateTimeSql then return opt.queryMaxUpdateTimeSql end
 
     -- ALTER TABLE `xxx` ADD COLUMN `sync_update_time`  TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
-    opt.queryMaxUpdateTimeSql, n, err = ngx_re_gsub(opt.queryAllSql, "select\\s+(.*?)\\s+from\\s+(.*)", "select max(sync_update_time) as max_update_time from $2", "i")
+    -- s for "single line mode" makes the dot match all characters, including line breaks. 
+    opt.queryMaxUpdateTimeSql, n, err = ngx_re_gsub(opt.queryAllSql, "select\\s+(.*?)\\s+from\\s+(.*)", "select max(sync_update_time) as max_update_time from $2", "si")
     if not opt.queryMaxUpdateTimeSql then ngx_log(ngx.ERR, "error: ", err)
     else ngx_log(ngx.ERR, opt.queryMaxUpdateTimeSql) end
 end
