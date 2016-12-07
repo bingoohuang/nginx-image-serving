@@ -135,11 +135,11 @@ end
 local startTimer -- 提前在此定义函数名，否则syncJob会报告找不到全局变量startTimer
 local function syncJob(premature, opt)
     if premature then return end
-    if syncData(opt) then startTimer(opt) end
+    local delay = opt.timerDurationSeconds or 60 -- 60 seconds
+    if syncData(opt) then startTimer(opt, delay) end
 end
 
-startTimer = function (opt)
-    local delay = opt.timerDurationSeconds or 60 -- 60 seconds
+startTimer = function (opt, delay)
     local ok, err = ngx.timer.at(delay, syncJob, opt)
     if not ok then ngx_log(ngx.ERR, "failed to create the timer: ", err) end
 end
@@ -235,7 +235,7 @@ function _M.get(opt)
     createTimerStartedKey(opt)
     local timerStarted = getFromCache(opt.dict, opt.timerStartedKey)
     if timerStarted ~= "yes" then
-        startTimer(opt)
+        startTimer(opt, 0)
         opt.dict:set(opt.timerStartedKey, "yes")
     end
 
