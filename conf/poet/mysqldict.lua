@@ -1,12 +1,12 @@
--- 本模块提供字典读取缓存功能
--- 第一次调用时，从MySQL中读取字典数据表所有需要缓存的数据（数量较少更新不频繁的表）
+--- 本模块提供字典读取缓存功能
+--- 第一次调用时，从MySQL中读取字典数据表所有需要缓存的数据（数量较少更新不频繁的表）
 --- 为什么要一次性从数据库中加载所有的缓存数据呢？
---                    1) 效率高，只需要访问一次数据库
---                    2) 避免纯消耗的空查询（每次查询KEY都没有结果，每次都要访问数据库）
---------------将字典数据做成nginx的dict缓存
---------------根据key从缓存中读取数据
--- 后续调用时，直接从缓存中读取数据
--- 通过调用flushAll清除所有缓存
+--- 1) 效率高，只需要访问一次数据库
+--- 2) 避免纯消耗的空查询（每次查询KEY都没有结果，每次都要访问数据库）
+-------------- 将字典数据做成nginx的dict缓存
+-------------- 根据key从缓存中读取数据
+--- 后续调用时，直接从缓存中读取数据
+--- 通过调用flushAll清除所有缓存
 
 local _M = {
     _VERSION = '0.1'
@@ -31,18 +31,28 @@ end
 local function createDict(opt)
     opt.dict = opt.dict or ngx_shared[opt.luaSharedDictName]
 end
+
 local function createPrefix(opt)
-    opt.prefix = (opt.prefix or "__default_prefix") .. "."
+    local prefix = opt.prefix or "__default_prefix"
+    if string.sub(prefix, -1) ~= "." then
+        prefix = prefix .. "."
+    end
+
+    opt.prefix = prefix
 end
+
 local function createCacheKey(opt)
     opt.cacheKey = opt.cacheKey or (opt.prefix .. opt.key)
 end
+
 local function createLoadedKey(opt)
     opt.loadedKey = opt.loadedKey or (opt.prefix .. "__loaded_key__" .. opt.luaSharedDictName)
 end
+
 local function createTimerStartedKey(opt)
     opt.timerStartedKey = opt.timerStartedKey or (opt.prefix .. "__timer_started_key__" .. opt.luaSharedDictName)
 end
+
 local function createMaxUpdateTimeKey(opt)
     opt.maxUpdateTimeKey = opt.maxUpdateTimeKey or (opt.prefix .. "__max_update_time__" .. opt.luaSharedDictName)
 end
@@ -58,12 +68,16 @@ local function connectMySQL(dataSourceName)
     if not m then return nil, "dataSourceName format is not recognized" end
 
     local ok, err, errno, sqlstate = db:connect {
-        host = m[3], port = m[4], database = m[5],
-        user = m[1], password = m[2],
-        max_packet_size = 1024 * 1024 }
+        host = m[3],
+        port = m[4],
+        database = m[5],
+        user = m[1],
+        password = m[2],
+        max_packet_size = 1024 * 1024
+    }
     if ok then return db, nil end
 
-    return nil, "failed to connect mysql ".. err
+    return nil, "failed to connect mysql " .. err
 end
 
 local function closeDb(db)
@@ -72,18 +86,18 @@ local function closeDb(db)
 end
 
 local function getFromCache(dict, key)
-   local value = dict:get(key)
-   if not value then return nil end
-   if value == "yes" then return value end
-   return cjson_decode(value)
+    local value = dict:get(key)
+    if not value then return nil end
+    if value == "yes" then return value end
+    return cjson_decode(value)
 end
 
 local function setToCache(dict, prefix, rows, pkColumnName)
-   for k,v in pairs(rows) do
-       local key = prefix .. v[pkColumnName]
-       local val = cjson_encode(v)
-       local succ, err, forcible = dict:set(key, val)
-   end
+    for k, v in pairs(rows) do
+        local key = prefix .. v[pkColumnName]
+        local val = cjson_encode(v)
+        local succ, err, forcible = dict:set(key, val)
+    end
 end
 
 local function startsWith(str, substr)
@@ -99,9 +113,12 @@ local function createQueryLastUpdateSql(opt)
 
     -- ALTER TABLE `xxx` ADD COLUMN `sync_update_time`  TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
     -- s for "single line mode" makes the dot match all characters, including line breaks. 
-    opt.queryMaxUpdateTimeSql, n, err = ngx_re_gsub(opt.queryAllSql, "select\\s+(.*?)\\s+from\\s+(.*)", "select max(sync_update_time) as max_update_time from $2", "si")
+    opt.queryMaxUpdateTimeSql, n, err = ngx_re_gsub(opt.queryAllSql,
+        "select\\s+(.*?)\\s+from\\s+(.*)",
+        "select max(sync_update_time) as max_update_time from $2", "si")
     if not opt.queryMaxUpdateTimeSql then ngx_log(ngx.ERR, "error: ", err)
-    else ngx_log(ngx.ERR, opt.queryMaxUpdateTimeSql) end
+    else ngx_log(ngx.ERR, opt.queryMaxUpdateTimeSql)
+    end
 end
 
 -- return true : need to go on looping
@@ -122,8 +139,9 @@ local function syncData(opt)
         createMaxUpdateTimeKey(opt)
         local maxUpdateTime = opt.dict:get(opt.maxUpdateTimeKey)
         local maxUpdateTimeInDb = rows[1]["max_update_time"]
-        ngx_log(ngx.ERR, "maxUpdateTime in dict [", maxUpdateTime, "] vs db [", maxUpdateTimeInDb, "]")
-        if maxUpdateTimeInDb ~= maxUpdateTime then
+        local maxUpdateTimeChanged = maxUpdateTimeInDb ~= maxUpdateTime
+        ngx_log(ngx.ERR, "maxUpdateTime in dict [", maxUpdateTime, "] vs db [", maxUpdateTimeInDb, "] maxUpdateTimeChanged ", maxUpdateTimeChanged)
+        if maxUpdateTimeChanged then
             opt.dict:set(opt.maxUpdateTimeKey, maxUpdateTimeInDb)
             -- 失效的时候，也同时终止timer的定时运行，等待下次访问时重新启动
             if maxUpdateTime ~= nil then _M.flushAll(opt) return false end
@@ -140,7 +158,7 @@ local function syncJob(premature, opt)
     if syncData(opt) then startTimer(opt, delay) end
 end
 
-startTimer = function (opt, delay)
+startTimer = function(opt, delay)
     local ok, err = ngx.timer.at(delay, syncJob, opt)
     if not ok then ngx_log(ngx.ERR, "failed to create the timer: ", err) end
 end
@@ -148,7 +166,7 @@ end
 local function flushAllPrefix(dict, prefix)
     ngx_log(ngx.ERR, "flush all in dict with prefix [", prefix, "]")
     local keys = dict:get_keys(0)
-    for index,dictKey in pairs(keys) do
+    for index, dictKey in pairs(keys) do
         if startsWith(dictKey, prefix) then dict:delete(dictKey) end
     end
 end
