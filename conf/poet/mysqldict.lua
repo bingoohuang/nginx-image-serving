@@ -13,7 +13,7 @@ local _M = {
 }
 
 local cjson = require "cjson"
-local restyLock = require "resty.lock"
+local resty_lock = require "resty.lock"
 local mysql = require "resty.mysql"
 local ngx_re_match = ngx.re.match
 local ngx_re_gsub = ngx.re.gsub
@@ -112,7 +112,9 @@ local function createQueryLastUpdateSql(opt)
     if opt.queryMaxUpdateTimeSql then return opt.queryMaxUpdateTimeSql end
 
     -- ALTER TABLE `xxx` ADD COLUMN `sync_update_time`  TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
-    -- s for "single line mode" makes the dot match all characters, including line breaks. 
+    -- s for "single line mode" makes the dot match all characters, including line breaks.
+    -- i case insensitive mode (similar to Perl's /i modifier)
+    -- refer https://github.com/openresty/lua-nginx-module#ngxrematch
     opt.queryMaxUpdateTimeSql, n, err = ngx_re_gsub(opt.queryAllSql,
         "select\\s+(.*?)\\s+from\\s+(.*)",
         "select max(sync_update_time) as max_update_time from $2", "si")
@@ -153,6 +155,8 @@ end
 
 local startTimer -- 提前在此定义函数名，否则syncJob会报告找不到全局变量startTimer
 local function syncJob(premature, opt)
+    -- premature，则是用于标识触发该回调的原因是否由于 timer 的到期。Nginx worker 的退出，也会触发当前所有有效的 timer。
+    -- 这时候 premature 会被设置为 true。回调函数需要正确处理这一参数（通常直接返回即可）。
     if premature then return end
     local delay = opt.timerDurationSeconds or 60 -- 60 seconds
     if syncData(opt) then startTimer(opt, delay) end
@@ -185,7 +189,7 @@ function _M.flushAll(opt)
     createLoadedKey(opt)
 
     -- 尝试获取锁，获取不到，直接返回错误信息
-    local locker = restyLock:new(opt.dictLockName)
+    local locker = resty_lock:new(opt.dictLockName)
     local locked, err = locker:lock(opt.loadedKey)
     if not locked then return "failed to get lock" end
 
@@ -226,9 +230,10 @@ function _M.get(opt)
     if loaded == "yes" then return nil end
 
     -- 尝试获取锁，获取不到，直接返回nil
-    local locker = restyLock:new(opt.dictLockName)
-    local locked, err = locker:lock(opt.loadedKey)
-    if not locked then return nil end
+    local locker, err = resty_lock:new(opt.dictLockName)
+    if not lock then ngx_log(ngx.ERR, "failed to create lock: ", err) return nil end
+    local elapsed, err = locker:lock(opt.loadedKey)
+    if not elapsed then return nil end
 
     -- 获取锁后，再次尝试从缓存中读取（因为可能在等待锁时，缓存已经设定好）
     local val = getFromCache(opt.dict, opt.cacheKey)
