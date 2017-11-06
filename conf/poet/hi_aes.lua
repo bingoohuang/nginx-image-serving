@@ -2,7 +2,8 @@ local _M = {
     _VERSION = '0.1'
 }
 local setmetatable = setmetatable
-
+local encode_base64 = ngx.encode_base64
+local decode_base64 = ngx.decode_base64
 local mt = { __index = _M }
 
 local aes = require("resty.aes")
@@ -21,11 +22,11 @@ function _M.new(self, opt)
 end
 
 function _M.encrypt (self, text)
-    return ngx.encode_base64(self.encryptor:encrypt(text))
+    return encode_base64(self.encryptor:encrypt(text))
 end
 
 function _M.decrypt (self, text)
-    return self.encryptor:decrypt(ngx.decode_base64(text))
+    return self.encryptor:decrypt(decode_base64(text))
 end
 
 return _M

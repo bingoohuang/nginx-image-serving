@@ -2,6 +2,10 @@ local _M = {
     _VERSION = '0.1'
 }
 
+local string_match = string.match
+local hi_redis = require("hi_redis")
+local hi_aes = require("hi_aes")
+
 local function setHeaders (tid, tcode)
     ngx.req.set_header("tid", tid)
     ngx.req.set_header("tcode", tcode)
@@ -29,32 +33,30 @@ _M.tcode = function(opt)
     -- local domain = tcode and ("www" ~= tcode)
     -- tcode = tcode or string.match(ngx.var.uri, "^/(%w+)$")
     local prevWord = opt and opt.prevWord or 'tcode'
-    local tcode = string.match(ngx.var.uri, "/" .. prevWord .. "/(%w+)")
+    local tcode = string_match(ngx.var.uri, "/" .. prevWord .. "/(%w+)")
 
     if tcode then
-        local hi_redis = require("hi_redis"):connect(opt)
-        local tid, err = hi_redis:get("tcode:" .. tcode)
-        hi_redis:close()
+        local redis = hi_redis:connect(opt)
+        local tid, err = redis:get("tcode:" .. tcode)
+        redis:close()
 
         if not tid then ngx.log(ngx.STDERR, err) ngx.exit(404) end
 
         setHeaders(tid, tcode)
 
-        -- if not domain then
-            local hi_aes = require("hi_aes"):new(opt)
-            require("hi_cookie"):set {
-                key = "easyhi_tcode", path = "/",
-                value = hi_aes:encrypt(tid .. "^" .. tcode)
-            }
-        -- end
+        local aes = hi_aes:new(opt)
+        require("hi_cookie"):set {
+            key = "easyhi_tcode", path = "/",
+            value = aes:encrypt(tid .. "^" .. tcode)
+        }
 
         return tid
     else
         local encrptedTid = ngx.var.cookie_easyhi_tcode
         if not encrptedTid then ngx.exit(404) return end
 
-        local hi_aes = require("hi_aes"):new(opt)
-        local tidAndTcode = hi_aes:decrypt(encrptedTid)
+        local aes = hi_aes:new(opt)
+        local tidAndTcode = aes:decrypt(encrptedTid)
         local tid, tcode = string.match(tidAndTcode, "(.+)%^(.+)")
 
         setHeaders(tid, tcode)

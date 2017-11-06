@@ -2,7 +2,7 @@ local _M = {
     _VERSION = '0.1'
 }
 local setmetatable = setmetatable
-
+local resty_redis = require("resty.redis")
 local mt = { __index = _M }
 
 function _M.connect(self, opt)
@@ -15,7 +15,7 @@ function _M.connect(self, opt)
         auth = opt and opt.auth
     }
 
-    local redis = require("resty.redis"):new()
+    local redis = resty_redis:new()
     redis:set_timeout(conf.timeout) -- 1 second
     local ok, err = redis:connect(conf.host, conf.port)
     if not ok then return nil, err end
