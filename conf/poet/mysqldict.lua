@@ -24,8 +24,10 @@ local ngx_shared = ngx.shared
 local string_find = string.find
 
 local function error(msg)
-    ngx.status = 500 ngx.say(msg)
-    ngx_log(ngx.ERR, msg) ngx.exit(500)
+    ngx.status = 500
+    ngx.say(msg)
+    ngx_log(ngx.ERR, msg)
+    ngx.exit(500)
 end
 
 local function createDict(opt)
@@ -45,16 +47,17 @@ local function createCacheKey(opt)
     opt.cacheKey = opt.cacheKey or (opt.prefix .. opt.key)
 end
 
-local function createLoadedKey(opt)
-    opt.loadedKey = opt.loadedKey or (opt.prefix .. "__loaded_key__" .. opt.luaSharedDictName)
+local function createLockKey(opt)
+    opt.lockKey = opt.lockKey or (opt.prefix .. "__lock_key__" )
 end
 
-local function createTimerStartedKey(opt)
-    opt.timerStartedKey = opt.timerStartedKey or (opt.prefix .. "__timer_started_key__" .. opt.luaSharedDictName)
+
+local function createLoadedKey(opt)
+    opt.loadedKey = opt.loadedKey or (opt.prefix .. "__loaded_key__" )
 end
 
 local function createMaxUpdateTimeKey(opt)
-    opt.maxUpdateTimeKey = opt.maxUpdateTimeKey or (opt.prefix .. "__max_update_time__" .. opt.luaSharedDictName)
+    opt.maxUpdateTimeKey = opt.maxUpdateTimeKey or (opt.prefix .. "__max_update_time__")
 end
 
 local function connectMySQL(dataSourceName)
@@ -88,8 +91,8 @@ end
 local function getFromCache(dict, key)
     local value = dict:get(key)
     if not value then return nil end
-    if value == "yes" then return value end
-    return cjson_decode(value)
+
+    return value == "yes" and value or cjson_decode(value)
 end
 
 local function setToCache(dict, prefix, rows, pkColumnName)
@@ -123,41 +126,15 @@ local function createQueryLastUpdateSql(opt)
     end
 end
 
--- return true : need to go on looping
--- return false: end up looping
-local function syncData(opt)
-    createQueryLastUpdateSql(opt)
-    if not opt.queryMaxUpdateTimeSql then return false end
-
-    local db, err = connectMySQL(opt.dataSourceName)
-    if not db then ngx_log(ngx.ERR, "failed to connect MySQL: ", err) return true end
-
-    local rows, err, errcode, sqlstate = db:query(opt.queryMaxUpdateTimeSql)
-    closeDb(db)
-
-    if err then ngx_log(ngx.ERR, "error: ", err) return false end
-
-    if rows then
-        createMaxUpdateTimeKey(opt)
-        local maxUpdateTime = opt.dict:get(opt.maxUpdateTimeKey)
-        local maxUpdateTimeInDb = rows[1]["max_update_time"]
-        local maxUpdateTimeChanged = maxUpdateTimeInDb ~= maxUpdateTime
-        ngx_log(ngx.ERR, "maxUpdateTime in dict [", maxUpdateTime, "] vs db [", maxUpdateTimeInDb, "] maxUpdateTimeChanged ", maxUpdateTimeChanged)
-        if maxUpdateTimeChanged then
-            opt.dict:set(opt.maxUpdateTimeKey, maxUpdateTimeInDb)
-            -- 失效的时候，也同时终止timer的定时运行，等待下次访问时重新启动
-            if maxUpdateTime ~= nil then _M.flushAll(opt) return false end
-        end
-    end
-
-    return true
-end
 
 local startTimer -- 提前在此定义函数名，否则syncJob会报告找不到全局变量startTimer
+local fastFlushDict -- 同上
+local syncData  -- 同上
 local function syncJob(premature, opt)
     -- premature，则是用于标识触发该回调的原因是否由于 timer 的到期。Nginx worker 的退出，也会触发当前所有有效的 timer。
     -- 这时候 premature 会被设置为 true。回调函数需要正确处理这一参数（通常直接返回即可）。
-    if premature then return end
+    -- 重要：reload时，premature为true，这时候timer需要重新启动，所以快速清理后退出。
+    if premature then fastFlushDict(opt) return end
     local delay = opt.timerDurationSeconds or 60 -- 60 seconds
     if syncData(opt) then startTimer(opt, delay) end
 end
@@ -167,19 +144,66 @@ startTimer = function(opt, delay)
     if not ok then ngx_log(ngx.ERR, "failed to create the timer: ", err) end
 end
 
-local function flushAllPrefix(dict, prefix)
+fastFlushDict = function(opt)
+  opt.dict:delete(opt.loadedKey)
+end
+
+-- return true : need to go on looping
+-- return false: end up looping
+syncData = function(opt)
+    createQueryLastUpdateSql(opt)
+    if not opt.queryMaxUpdateTimeSql then return false end
+
+    local db, err = connectMySQL(opt.dataSourceName)
+    if not db then ngx_log(ngx.ERR, "failed to connect MySQL: ", err) return true end
+
+    local rows, err, errcode, sqlstate = db:query(opt.queryMaxUpdateTimeSql)
+    closeDb(db)
+
+    if err then ngx_log(ngx.ERR, "error: ", err) return true end
+
+    if rows then
+        createMaxUpdateTimeKey(opt)
+        local maxUpdateTime = opt.dict:get(opt.maxUpdateTimeKey)
+        local maxUpdateTimeInDb = rows[1]["max_update_time"]
+        local maxUpdateTimeChanged = maxUpdateTimeInDb ~= maxUpdateTime
+        ngx_log(ngx.ERR, "maxUpdateTime in dict [", maxUpdateTime,
+          "] vs db [", maxUpdateTimeInDb, "] maxUpdateTimeChanged ", maxUpdateTimeChanged)
+        if maxUpdateTimeChanged then
+            opt.dict:set(opt.maxUpdateTimeKey, maxUpdateTimeInDb)
+            -- 失效的时候，也同时终止timer的定时运行，等待下次访问时重新启动
+            if maxUpdateTime ~= nil then
+              fastFlushDict(opt)
+              ngx_log(ngx.ERR, "timer exited, prepare to restart until next access")
+              return false
+            end
+        end
+    end
+
+    return true
+end
+
+local function flushAllPrefix(opt)
+    local dict = opt.dict
+    local prefix = opt.prefix
     ngx_log(ngx.ERR, "flush all in dict with prefix [", prefix, "]")
+
+    dict:delete(opt.loadedKey)
+    dict:delete(opt.maxUpdateTimeKey)
+
     local keys = dict:get_keys(0)
     for index, dictKey in pairs(keys) do
-        if startsWith(dictKey, prefix) then dict:delete(dictKey) end
+        if startsWith(dictKey, prefix) and dictKey ~= opt.lockKey then
+          dict:delete(dictKey)
+        end
     end
 end
+
 
 -- 清除所有缓存
 -- opt: 相关MySQL信息，表信息等
 --    opt.luaSharedDictName LUA共享字典名
---    opt.dictLockName  锁名称，在从MySQL刷数据时防止缓存失效风暴
---    opt.prefix  可选。前缀名，当多个不同缓存使用同一个luaSharedDictName和dictLockName时，使用前缀加以区分
+--    opt.prefix  可选。前缀名，当多个不同缓存使用同一个luaSharedDictName时，使用前缀加以区分
 
 -- 返回 清除结果
 --    OK 清除成功， 否则为错误信息
@@ -187,21 +211,24 @@ function _M.flushAll(opt)
     createDict(opt)
     createPrefix(opt)
     createLoadedKey(opt)
+    createLockKey(opt)
 
     -- 尝试获取锁，获取不到，直接返回错误信息
     local locker = resty_lock:new(opt.dictLockName)
-    local locked, err = locker:lock(opt.loadedKey)
+    local locked, err = locker:lock(opt.lockKey)
     if not locked then return "failed to get lock" end
 
     -- dict:flush_all() -- 清除已有缓存数据
-    flushAllPrefix(opt.dict, opt.prefix)
+    flushAllPrefix(opt)
 
     locker:unlock()
     return "OK"
 end
 
+local function loadMySqlData()
+end
+
 -- lua_shared_dict mysqldict_demo 1m;
--- lua_shared_dict mysqlDict_lock 1k;
 -- 从缓存中获取数据
 
 -- opt: 相关MySQL信息，表信息等
@@ -210,8 +237,7 @@ end
 --    opt.queryAllSql 查询用的SQL语句，用于一次性从数据库中查询所有需要缓存的数据，一次性缓存后就不再访问数据库了
 --    opt.pkColumnName   字典表的主键字段名
 --    opt.luaSharedDictName LUA共享字典名
---    opt.dictLockName  锁名称，在从MySQL刷数据时防止缓存失效风暴，可以多个luaSharedDictName共用
---    opt.prefix  可选。前缀名，当多个不同缓存使用同一个luaSharedDictName和dictLockName时，使用前缀加以区分
+--    opt.prefix  可选。前缀名，当多个不同缓存使用同一个luaSharedDictName时，使用前缀加以区分
 --    opt.timerDurationSeconds 可选。缓存更新检查时间间隔描述。默认60秒。
 
 -- 返回 val
@@ -221,52 +247,55 @@ function _M.get(opt)
     createPrefix(opt)
     createLoadedKey(opt)
     createCacheKey(opt)
+    createLockKey(opt)
+
+    local dict = opt.dict
+    local cacheKey = opt.cacheKey
 
     -- 尝试从缓存中读取，如果读取到，直接返回
-    local val = getFromCache(opt.dict, opt.cacheKey)
+    local val = getFromCache(dict, cacheKey)
     if val then return val end
+
     -- 查看缓存数据是否已经加载，如果已经加载，则直接返回nil
-    local loaded = getFromCache(opt.dict, opt.loadedKey)
+    local loadedKey = opt.loadedKey
+    local loaded = getFromCache(dict, loadedKey)
     if loaded == "yes" then return nil end
 
     -- 尝试获取锁，获取不到，直接返回nil
-    local locker, err = resty_lock:new(opt.dictLockName)
-    if not lock then ngx_log(ngx.ERR, "failed to create lock: ", err) return nil end
-    local elapsed, err = locker:lock(opt.loadedKey)
+    local locker, err = resty_lock:new(opt.luaSharedDictName)
+    if not locker then ngx_log(ngx.ERR, "failed to create lock: ", err) return nil end
+    local elapsed, err = locker:lock(opt.lockKey)
     if not elapsed then return nil end
 
     -- 获取锁后，再次尝试从缓存中读取（因为可能在等待锁时，缓存已经设定好）
-    local val = getFromCache(opt.dict, opt.cacheKey)
+    local val = getFromCache(dict, cacheKey)
     if val then locker:unlock() return val end
     -- 查看缓存数据是否已经加载，如果已经加载，则直接返回nil
-    local loaded = getFromCache(opt.dict, opt.loadedKey)
+    local loaded = getFromCache(dict, loadedKey)
     if loaded == "yes" then locker:unlock() return nil end
 
-    flushAllPrefix(opt.dict, opt.prefix) -- 清除已有缓存数据
+    flushAllPrefix(opt) -- 清除已有缓存数据
 
     -- 从数据库字典表中加载数据到缓存
     local db, err = connectMySQL(opt.dataSourceName)
     if not db then locker:unlock() error(err) end
+
     local rows, err, errcode, sqlstate = db:query(opt.queryAllSql)
-    if rows then
-        ngx_log(ngx.ERR, "get rows" .. cjson_encode(rows))
-        setToCache(opt.dict, opt.prefix, rows, opt.pkColumnName)
-        opt.dict:set(opt.loadedKey, "yes")
-    end
     closeDb(db)
 
-    -- 在锁定的状态下检查定时同步是否开启
-    createTimerStartedKey(opt)
-    local timerStarted = getFromCache(opt.dict, opt.timerStartedKey)
-    if timerStarted ~= "yes" then
-        startTimer(opt, 0)
-        opt.dict:set(opt.timerStartedKey, "yes")
+    if rows then
+        ngx_log(ngx.ERR, "get rows" .. cjson_encode(rows))
+        setToCache(dict, opt.prefix, rows, opt.pkColumnName)
+        dict:set(loadedKey, "yes")
     end
+
+    -- 在锁定的状态下检查定时同步是否开启
+    startTimer(opt, 0)
 
     locker:unlock()
     if not rows then error("bad result: " .. err) end
 
-    return getFromCache(opt.dict, opt.cacheKey)
+    return getFromCache(dict, cacheKey)
 end
 
 return _M
