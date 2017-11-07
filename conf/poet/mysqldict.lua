@@ -289,7 +289,6 @@ function _M.get(opt)
         dict:set(loadedKey, "yes")
     end
 
-    -- 在锁定的状态下检查定时同步是否开启
     startTimer(opt, 0)
 
     locker:unlock()
