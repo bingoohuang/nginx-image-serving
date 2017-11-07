@@ -274,8 +274,6 @@ function _M.get(opt)
     local loaded = getFromCache(dict, loadedKey)
     if loaded == "yes" then locker:unlock() return nil end
 
-    flushAllPrefix(opt) -- 清除已有缓存数据
-
     -- 从数据库字典表中加载数据到缓存
     local db, err = connectMySQL(opt.dataSourceName)
     if not db then locker:unlock() error(err) end
@@ -283,9 +281,11 @@ function _M.get(opt)
     local rows, err, errcode, sqlstate = db:query(opt.queryAllSql)
     closeDb(db)
 
+    flushAllPrefix(opt) -- 清除已有缓存数据
+
     if rows then
         ngx_log(ngx.ERR, "get rows" .. cjson_encode(rows))
-        setToCache(dict, opt.prefix, rows, opt.pkColumnName)
+        setToCache(dict, opt.prefix, rows, opt.pkColumnName or "id")
         dict:set(loadedKey, "yes")
     end
 
